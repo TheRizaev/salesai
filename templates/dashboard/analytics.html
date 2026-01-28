@@ -1,0 +1,250 @@
+{% extends 'dashboard/base.html' %}
+
+{% block title %}Аналитика{% endblock %}
+
+{% block extra_css %}
+<style>
+.chart-container {
+    background: rgba(15, 23, 42, 0.6);
+    backdrop-filter: blur(20px);
+    border: 1px solid var(--glass-border);
+    border-radius: 16px;
+    padding: 30px;
+    margin-bottom: 30px;
+    height: 400px;
+}
+
+.filter-bar {
+    display: flex;
+    gap: 15px;
+    margin-bottom: 30px;
+    flex-wrap: wrap;
+}
+
+.filter-select {
+    padding: 10px 16px;
+    background: rgba(15, 23, 42, 0.8);
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    color: white;
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: 0.3s;
+}
+
+.filter-select:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">📊 Аналитика</h1>
+        <p class="page-subtitle">Детальная статистика по вашим ботам</p>
+    </div>
+</div>
+
+<!-- FILTERS -->
+<div class="filter-bar">
+    <select class="filter-select" onchange="window.location.href='?bot=' + this.value">
+        <option value="">Все боты</option>
+        {% for bot in bots %}
+            <option value="{{ bot.id }}" {% if selected_bot and selected_bot.id == bot.id %}selected{% endif %}>
+                {{ bot.name }}
+            </option>
+        {% endfor %}
+    </select>
+    
+    <select class="filter-select">
+        <option>Последние 7 дней</option>
+        <option>Последние 30 дней</option>
+        <option>Этот месяц</option>
+        <option>Прошлый месяц</option>
+    </select>
+</div>
+
+<!-- STATS SUMMARY -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-icon" style="background: rgba(99, 102, 241, 0.1); color: var(--accent-primary);">
+            <i class="fa-solid fa-comments"></i>
+        </div>
+        <div class="stat-value">{{ total_stats.total_conversations|default:0 }}</div>
+        <div class="stat-label">Всего диалогов</div>
+        <div class="stat-change positive">
+            <i class="fa-solid fa-arrow-up"></i>
+            +15% к прошлому периоду
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-icon" style="background: rgba(168, 85, 247, 0.1); color: var(--accent-secondary);">
+            <i class="fa-solid fa-message"></i>
+        </div>
+        <div class="stat-value">{{ total_stats.total_messages|default:0 }}</div>
+        <div class="stat-label">Сообщений отправлено</div>
+        <div class="stat-change positive">
+            <i class="fa-solid fa-arrow-up"></i>
+            +22% к прошлому периоду
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-icon" style="background: rgba(34, 197, 94, 0.1); color: #22c55e;">
+            <i class="fa-solid fa-user-plus"></i>
+        </div>
+        <div class="stat-value">{{ total_stats.total_leads|default:0 }}</div>
+        <div class="stat-label">Захвачено лидов</div>
+        <div class="stat-change positive">
+            <i class="fa-solid fa-arrow-up"></i>
+            +18% к прошлому периоду
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-icon" style="background: rgba(245, 158, 11, 0.1); color: #f59e0b;">
+            <i class="fa-solid fa-chart-simple"></i>
+        </div>
+        <div class="stat-value">
+            {% if total_stats.total_conversations %}
+                {{ total_stats.total_leads|default:0|floatformat:0|mul:100|div:total_stats.total_conversations|floatformat:1 }}%
+            {% else %}
+                0%
+            {% endif %}
+        </div>
+        <div class="stat-label">Средняя конверсия</div>
+        <div class="stat-change positive">
+            <i class="fa-solid fa-arrow-up"></i>
+            +3.2% к прошлому периоду
+        </div>
+    </div>
+</div>
+
+<!-- CHARTS -->
+<div class="glass-card">
+    <h2 class="card-title" style="margin-bottom: 30px;">
+        <i class="fa-solid fa-chart-line"></i>
+        Динамика по дням
+    </h2>
+    
+    <div class="chart-container">
+        <canvas id="conversationsChart"></canvas>
+    </div>
+</div>
+
+<div class="glass-card">
+    <h2 class="card-title" style="margin-bottom: 30px;">
+        <i class="fa-solid fa-chart-bar"></i>
+        Распределение по платформам
+    </h2>
+    
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
+        {% for bot in bots %}
+            <div style="background: rgba(255, 255, 255, 0.02); padding: 20px; border-radius: 12px; border: 1px solid var(--glass-border);">
+                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 15px;">
+                    <div style="width: 40px; height: 40px; border-radius: 10px; background: rgba(99, 102, 241, 0.1); display: flex; align-items: center; justify-content: center;">
+                        {% if bot.platform == 'telegram' %}
+                            <i class="fa-brands fa-telegram" style="color: #229ED9; font-size: 1.3rem;"></i>
+                        {% elif bot.platform == 'whatsapp' %}
+                            <i class="fa-brands fa-whatsapp" style="color: #25D366; font-size: 1.3rem;"></i>
+                        {% elif bot.platform == 'vk' %}
+                            <i class="fa-brands fa-vk" style="color: #0077FF; font-size: 1.3rem;"></i>
+                        {% endif %}
+                    </div>
+                    <div>
+                        <div style="font-weight: 600; color: white;">{{ bot.name }}</div>
+                        <div style="font-size: 0.85rem; color: var(--text-secondary);">{{ bot.get_platform_display }}</div>
+                    </div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9rem;">
+                    <div>
+                        <div style="color: var(--text-secondary);">Диалогов</div>
+                        <div style="font-weight: 700; color: white; font-size: 1.2rem;">{{ bot.total_conversations }}</div>
+                    </div>
+                    <div>
+                        <div style="color: var(--text-secondary);">Конверсия</div>
+                        <div style="font-weight: 700; color: #22c55e; font-size: 1.2rem;">{{ bot.conversion_rate }}%</div>
+                    </div>
+                </div>
+            </div>
+        {% endfor %}
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+// Данные для графика
+const analyticsData = {{ analytics_data|safe }};
+
+const dates = analyticsData.map(item => {
+    const date = new Date(item.date);
+    return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+});
+
+const conversations = analyticsData.map(item => item.conversations || 0);
+const leads = analyticsData.map(item => item.leads || 0);
+
+const ctx = document.getElementById('conversationsChart').getContext('2d');
+const chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+        labels: dates,
+        datasets: [
+            {
+                label: 'Диалоги',
+                data: conversations,
+                borderColor: '#6366f1',
+                backgroundColor: 'rgba(99, 102, 241, 0.1)',
+                tension: 0.4,
+                fill: true
+            },
+            {
+                label: 'Лиды',
+                data: leads,
+                borderColor: '#22c55e',
+                backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                tension: 0.4,
+                fill: true
+            }
+        ]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: {
+                labels: {
+                    color: '#9ca3af',
+                    font: {
+                        family: 'Inter',
+                        size: 12
+                    }
+                }
+            }
+        },
+        scales: {
+            x: {
+                grid: {
+                    color: 'rgba(255, 255, 255, 0.05)'
+                },
+                ticks: {
+                    color: '#9ca3af'
+                }
+            },
+            y: {
+                grid: {
+                    color: 'rgba(255, 255, 255, 0.05)'
+                },
+                ticks: {
+                    color: '#9ca3af'
+                }
+            }
+        }
+    }
+});
+</script>
+{% endblock %}

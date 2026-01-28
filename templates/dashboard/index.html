@@ -1,0 +1,271 @@
+{% extends 'dashboard/base.html' %}
+
+{% block title %}Обзор{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Добро пожаловать, {{ request.user.first_name|default:request.user.username }}! 👋</h1>
+        <p class="page-subtitle">Вот обзор ваших чат-ботов за последнюю неделю</p>
+    </div>
+    <a href="{% url 'create_agent' %}" class="btn btn-primary">
+        <i class="fa-solid fa-plus"></i>
+        Создать бота
+    </a>
+</div>
+
+<!-- STATS CARDS -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-header">
+            <div class="stat-icon">
+                <i class="fa-solid fa-robot"></i>
+            </div>
+        </div>
+        <div class="stat-value">{{ active_bots }}</div>
+        <div class="stat-label">Активных ботов</div>
+        <div class="stat-change positive">
+            <i class="fa-solid fa-arrow-up"></i>
+            из {{ total_bots }} всего
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-header">
+            <div class="stat-icon" style="background: rgba(168, 85, 247, 0.1); color: var(--accent-secondary);">
+                <i class="fa-solid fa-comments"></i>
+            </div>
+        </div>
+        <div class="stat-value">{{ total_conversations|default:0 }}</div>
+        <div class="stat-label">Диалогов за неделю</div>
+        <div class="stat-change positive">
+            <i class="fa-solid fa-arrow-up"></i>
+            +{{ total_messages|default:0 }} сообщений
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-header">
+            <div class="stat-icon" style="background: rgba(34, 197, 94, 0.1); color: #22c55e;">
+                <i class="fa-solid fa-user-plus"></i>
+            </div>
+        </div>
+        <div class="stat-value">{{ total_leads|default:0 }}</div>
+        <div class="stat-label">Захвачено лидов</div>
+        <div class="stat-change positive">
+            <i class="fa-solid fa-arrow-up"></i>
+            +{{ total_leads|default:0 }} за неделю
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-header">
+            <div class="stat-icon" style="background: rgba(245, 158, 11, 0.1); color: #f59e0b;">
+                <i class="fa-solid fa-percent"></i>
+            </div>
+        </div>
+        <div class="stat-value">{% if total_conversations %}{{ total_leads|default:0|floatformat:0|mul:100|div:total_conversations|floatformat:1 }}%{% else %}0%{% endif %}</div>
+        <div class="stat-label">Конверсия в лиды</div>
+        <div class="stat-change positive">
+            <i class="fa-solid fa-arrow-up"></i>
+            +2.1% к прошлой неделе
+        </div>
+    </div>
+</div>
+
+<!-- BOTS LIST -->
+<div class="glass-card">
+    <div class="card-header">
+        <h2 class="card-title">
+            <i class="fa-solid fa-robot"></i>
+            Ваши боты
+        </h2>
+        <a href="{% url 'agents_list' %}" class="btn btn-secondary" style="padding: 8px 16px; font-size: 0.9rem;">
+            Посмотреть все
+            <i class="fa-solid fa-arrow-right"></i>
+        </a>
+    </div>
+
+    {% if bots %}
+        <div class="agents-grid">
+            {% for bot in bots|slice:":3" %}
+                <div class="agent-card" onclick="window.location.href='{% url 'agent_detail' bot.id %}'">
+                    <div class="agent-header">
+                        <div class="agent-avatar">
+                            {% if bot.platform == 'telegram' %}
+                                <i class="fa-brands fa-telegram" style="color: #229ED9;"></i>
+                            {% elif bot.platform == 'whatsapp' %}
+                                <i class="fa-brands fa-whatsapp" style="color: #25D366;"></i>
+                            {% elif bot.platform == 'vk' %}
+                                <i class="fa-brands fa-vk" style="color: #0077FF;"></i>
+                            {% else %}
+                                <i class="fa-solid fa-robot"></i>
+                            {% endif %}
+                        </div>
+                        <div class="agent-info">
+                            <h3>{{ bot.name }}</h3>
+                            <div class="agent-platform">
+                                <i class="fa-solid fa-circle" style="font-size: 0.4rem;"></i>
+                                {{ bot.get_platform_display }}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="margin: 15px 0;">
+                        <span class="status-badge {% if bot.status == 'active' %}active{% else %}inactive{% endif %}">
+                            <span class="status-dot"></span>
+                            {% if bot.status == 'active' %}Активен{% else %}Неактивен{% endif %}
+                        </span>
+                    </div>
+
+                    <div class="agent-stats">
+                        <div class="agent-stat">
+                            <span class="agent-stat-value">{{ bot.total_conversations }}</span>
+                            <span class="agent-stat-label">Диалогов</span>
+                        </div>
+                        <div class="agent-stat">
+                            <span class="agent-stat-value">{{ bot.total_messages }}</span>
+                            <span class="agent-stat-label">Сообщений</span>
+                        </div>
+                        <div class="agent-stat">
+                            <span class="agent-stat-value">{{ bot.conversion_rate }}%</span>
+                            <span class="agent-stat-label">Конверсия</span>
+                        </div>
+                    </div>
+
+                    <div class="agent-actions">
+                        <button class="btn-icon" onclick="event.stopPropagation(); toggleBotStatus({{ bot.id }})" title="Включить/Выключить">
+                            <i class="fa-solid fa-power-off"></i>
+                        </button>
+                        <button class="btn-icon" onclick="event.stopPropagation(); window.location.href='{% url 'agent_detail' bot.id %}'" title="Настройки">
+                            <i class="fa-solid fa-gear"></i>
+                        </button>
+                        <button class="btn-icon btn-danger" onclick="event.stopPropagation(); deleteBot({{ bot.id }})" title="Удалить">
+                            <i class="fa-solid fa-trash"></i>
+                        </button>
+                    </div>
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="empty-state">
+            <div class="empty-icon">
+                <i class="fa-solid fa-robot"></i>
+            </div>
+            <h3 class="empty-title">У вас пока нет ботов</h3>
+            <p class="empty-text">
+                Создайте своего первого чат-бота и начните автоматизировать общение с клиентами
+            </p>
+            <a href="{% url 'create_agent' %}" class="btn btn-primary">
+                <i class="fa-solid fa-plus"></i>
+                Создать первого бота
+            </a>
+        </div>
+    {% endif %}
+</div>
+
+<!-- RECENT CONVERSATIONS -->
+{% if recent_conversations %}
+<div class="glass-card">
+    <div class="card-header">
+        <h2 class="card-title">
+            <i class="fa-solid fa-clock"></i>
+            Последние диалоги
+        </h2>
+        <a href="{% url 'conversations_list' %}" class="btn btn-secondary" style="padding: 8px 16px; font-size: 0.9rem;">
+            Все диалоги
+            <i class="fa-solid fa-arrow-right"></i>
+        </a>
+    </div>
+
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Пользователь</th>
+                <th>Бот</th>
+                <th>Последнее сообщение</th>
+                <th>Статус</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for conv in recent_conversations %}
+                <tr>
+                    <td>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <div style="width: 35px; height: 35px; border-radius: 50%; background: rgba(99, 102, 241, 0.1); display: flex; align-items: center; justify-content: center; color: var(--accent-primary);">
+                                <i class="fa-solid fa-user"></i>
+                            </div>
+                            <div>
+                                <div style="font-weight: 500; color: white;">{{ conv.user_name|default:"Пользователь" }}</div>
+                                <div style="font-size: 0.8rem; color: var(--text-secondary);">{{ conv.user_id }}</div>
+                            </div>
+                        </div>
+                    </td>
+                    <td>{{ conv.bot.name }}</td>
+                    <td style="color: var(--text-secondary); font-size: 0.9rem;">{{ conv.last_message_at|timesince }} назад</td>
+                    <td>
+                        {% if conv.is_lead %}
+                            <span class="status-badge" style="background: rgba(34, 197, 94, 0.1); color: #22c55e; border-color: rgba(34, 197, 94, 0.3);">
+                                <i class="fa-solid fa-check"></i> Лид
+                            </span>
+                        {% else %}
+                            <span class="status-badge inactive">
+                                <i class="fa-solid fa-comment"></i> Диалог
+                            </span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <a href="{% url 'conversation_detail' conv.id %}" class="btn-icon">
+                            <i class="fa-solid fa-eye"></i>
+                        </a>
+                    </td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<script>
+function toggleBotStatus(botId) {
+    if (!confirm('Изменить статус бота?')) return;
+    
+    fetch(`/api/agents/${botId}/toggle/`, {
+        method: 'POST',
+        headers: {
+            'X-CSRFToken': '{{ csrf_token }}',
+            'Content-Type': 'application/json'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert(data.message);
+            location.reload();
+        }
+    })
+    .catch(error => console.error('Error:', error));
+}
+
+function deleteBot(botId) {
+    if (!confirm('Вы уверены? Это действие нельзя отменить.')) return;
+    
+    fetch(`/api/agents/${botId}/delete/`, {
+        method: 'DELETE',
+        headers: {
+            'X-CSRFToken': '{{ csrf_token }}',
+            'Content-Type': 'application/json'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert(data.message);
+            location.reload();
+        }
+    })
+    .catch(error => console.error('Error:', error));
+}
+</script>
+{% endblock %}

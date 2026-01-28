@@ -1,0 +1,138 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Dashboard{% endblock %} — SalesAI Bot</title>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <link rel="stylesheet" href="{% static 'css/style.css' %}">
+    <link rel="stylesheet" href="{% static 'css/dashboard.css' %}">
+    
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <!-- NAVBAR -->
+    <nav id="mainNav" style="background: rgba(3, 7, 18, 0.95);">
+        <a href="{% url 'dashboard' %}" class="logo">
+            <i class="fa-solid fa-robot"></i> SalesAI Bot
+        </a>
+        
+        <div class="nav-desktop">
+            <div class="nav-links">
+                <a href="{% url 'dashboard' %}"><i class="fa-solid fa-house"></i> Dashboard</a>
+                <a href="{% url 'agents_list' %}"><i class="fa-solid fa-robot"></i> Агенты</a>
+                <a href="{% url 'conversations_list' %}"><i class="fa-solid fa-comments"></i> Диалоги</a>
+                <a href="{% url 'analytics' %}"><i class="fa-solid fa-chart-line"></i> Аналитика</a>
+            </div>
+            
+            <div class="auth-buttons">
+                <a href="{% url 'settings' %}" class="btn-small btn-login">
+                    <i class="fa-solid fa-gear"></i>
+                </a>
+                <a href="{% url 'account_logout' %}" class="btn-small btn-register" style="background: rgba(239, 68, 68, 0.1); color: #ef4444; border-color: rgba(239, 68, 68, 0.3);">
+                    <i class="fa-solid fa-right-from-bracket"></i> Выйти
+                </a>
+            </div>
+        </div>
+        
+        <button class="hamburger" id="menuToggle">
+            <i class="fa-solid fa-bars"></i>
+        </button>
+    </nav>
+
+    <!-- DASHBOARD LAYOUT -->
+    <div class="dashboard-layout">
+        <!-- SIDEBAR -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="user-profile">
+                    <div class="user-avatar">
+                        {{ request.user.first_name|first|default:"U"|upper }}{{ request.user.last_name|first|default:""|upper }}
+                    </div>
+                    <div class="user-info">
+                        <h4>{{ request.user.get_full_name|default:request.user.username }}</h4>
+                        <p>{{ request.user.email }}</p>
+                    </div>
+                </div>
+            </div>
+            
+            <nav class="sidebar-menu">
+                <div class="menu-section">
+                    <div class="menu-section-title">Главное</div>
+                    <a href="{% url 'dashboard' %}" class="menu-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">
+                        <i class="fa-solid fa-grid-2"></i>
+                        <span>Обзор</span>
+                    </a>
+                    <a href="{% url 'agents_list' %}" class="menu-link {% if 'agents' in request.path %}active{% endif %}">
+                        <i class="fa-solid fa-robot"></i>
+                        <span>Мои агенты</span>
+                    </a>
+                    <a href="{% url 'conversations_list' %}" class="menu-link {% if 'conversations' in request.path %}active{% endif %}">
+                        <i class="fa-solid fa-comments"></i>
+                        <span>Диалоги</span>
+                    </a>
+                </div>
+                
+                <div class="menu-section">
+                    <div class="menu-section-title">Управление</div>
+                    <a href="{% url 'knowledge_base' %}" class="menu-link {% if 'knowledge' in request.path %}active{% endif %}">
+                        <i class="fa-solid fa-brain"></i>
+                        <span>База знаний</span>
+                    </a>
+                    <a href="{% url 'analytics' %}" class="menu-link {% if 'analytics' in request.path %}active{% endif %}">
+                        <i class="fa-solid fa-chart-line"></i>
+                        <span>Аналитика</span>
+                    </a>
+                </div>
+                
+                <div class="menu-section">
+                    <div class="menu-section-title">Настройки</div>
+                    <a href="{% url 'settings' %}" class="menu-link {% if 'settings' in request.path %}active{% endif %}">
+                        <i class="fa-solid fa-gear"></i>
+                        <span>Настройки</span>
+                    </a>
+                    <a href="{% url 'docs' %}" class="menu-link">
+                        <i class="fa-solid fa-book"></i>
+                        <span>Документация</span>
+                    </a>
+                </div>
+            </nav>
+        </aside>
+
+        <!-- MAIN CONTENT -->
+        <main class="main-content">
+            {% if messages %}
+                <div style="margin-bottom: 20px;">
+                    {% for message in messages %}
+                        <div class="glass-card" style="background: rgba(34, 197, 94, 0.1); border-color: rgba(34, 197, 94, 0.3); padding: 15px 20px;">
+                            <i class="fa-solid fa-check-circle" style="color: #22c55e; margin-right: 10px;"></i>
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+            
+            {% block content %}
+            {% endblock %}
+        </main>
+    </div>
+
+    <script src="{% static 'js/main.js' %}"></script>
+    <script>
+        // Toggle sidebar on mobile
+        const menuToggle = document.getElementById('menuToggle');
+        const sidebar = document.getElementById('sidebar');
+        
+        if (menuToggle && sidebar) {
+            menuToggle.addEventListener('click', () => {
+                sidebar.classList.toggle('open');
+            });
+        }
+    </script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>
