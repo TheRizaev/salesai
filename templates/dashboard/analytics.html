@@ -1,4 +1,5 @@
 {% extends 'dashboard/base.html' %}
+{% load math_filters %}
 
 {% block title %}Аналитика{% endblock %}
 
@@ -111,7 +112,7 @@
         </div>
         <div class="stat-value">
             {% if total_stats.total_conversations %}
-                {{ total_stats.total_leads|default:0|floatformat:0|mul:100|div:total_stats.total_conversations|floatformat:1 }}%
+                {{ total_stats.total_leads|default:0|floatformat:0|multiply:100|divide:total_stats.total_conversations|floatformat:1 }}%
             {% else %}
                 0%
             {% endif %}

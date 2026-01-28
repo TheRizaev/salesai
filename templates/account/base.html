@@ -1,0 +1,37 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block head_title %}SalesAI Bot{% endblock %}</title>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <link rel="stylesheet" href="{% static 'css/style.css' %}">
+    <link rel="stylesheet" href="{% static 'css/login.css' %}">
+    
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+
+    <div class="animated-bg-container">
+        <div class="bg-blob blob-1"></div>
+        <div class="bg-blob blob-2"></div>
+        <div class="bg-blob blob-3"></div>
+    </div>
+    <div class="grid-bg"></div>
+
+    <div class="auth-card fade-in">
+        <a href="{% url 'home' %}" class="auth-logo">
+            <i class="fa-solid fa-robot"></i> SalesAI Bot
+        </a>
+
+        {% block content %}
+        {% endblock %}
+    </div>
+
+    {% block extra_body %}{% endblock %}
+</body>
+</html>

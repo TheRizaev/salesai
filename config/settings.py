@@ -109,7 +109,7 @@ AUTHENTICATION_BACKENDS = [
 # Email settings (for production use real SMTP)
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 
-# Allauth configuration (new format)
+# Allauth configuration (новый формат для allauth 65+)
 ACCOUNT_LOGIN_METHODS = {'email'}
 ACCOUNT_SIGNUP_FIELDS = ['email*', 'password1*', 'password2*']
 ACCOUNT_EMAIL_VERIFICATION = 'optional'

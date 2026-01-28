@@ -15,7 +15,6 @@ urlpatterns = [
     path('pricing/', views.pricing, name='pricing'),
     path('templates/', views.templates_view, name='templates'),
     path('docs/', views.docs, name='docs'),
-    path('login/', views.login_view, name='login'),
     
     # Dashboard
     path('dashboard/', views.dashboard, name='dashboard'),

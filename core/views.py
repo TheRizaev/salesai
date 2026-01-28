@@ -28,12 +28,6 @@ def docs(request):
     """Документация"""
     return render(request, 'docs.html')
 
-def login_view(request):
-    """Страница входа/регистрации"""
-    if request.user.is_authenticated:
-        return redirect('dashboard')
-    return render(request, 'login.html')
-
 # ===== DASHBOARD VIEWS =====
 
 @login_required
@@ -318,6 +312,7 @@ def upload_knowledge(request, agent_id):
         file_type=file_extension
     )
     
+    # TODO: Здесь должна быть обработка файла и извлечение текста
     
     return JsonResponse({
         'success': True,
