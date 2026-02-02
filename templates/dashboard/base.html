@@ -6,9 +6,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Dashboard{% endblock %} — SalesAI</title>
     
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    
     
     <link rel="stylesheet" href="{% static 'css/dashboard.css' %}">
     
@@ -16,18 +15,25 @@
 </head>
 <body>
 
+    <!-- Background -->
     <div class="dashboard-bg">
         <div class="grid-overlay"></div>
-        <div style="position: absolute; top: -100px; right: -100px; width: 500px; height: 500px; background: radial-gradient(circle, rgba(99, 102, 241, 0.15) 0%, transparent 70%); filter: blur(80px);"></div>
     </div>
 
+    <!-- Layout -->
     <div class="dashboard-layout">
         
+        <!-- Sidebar -->
         <aside class="sidebar" id="sidebar">
+            <!-- Logo -->
             <a href="{% url 'dashboard' %}" class="sidebar-logo">
-                <i class="fa-solid fa-robot"></i> SalesAI Panel
+                <div class="sidebar-logo-icon">
+                    <i class="fa-solid fa-brain"></i>
+                </div>
+                <span class="sidebar-logo-text">SalesAI</span>
             </a>
 
+            <!-- User Profile -->
             <div class="sidebar-header">
                 <div class="user-profile">
                     <div class="user-avatar">
@@ -35,73 +41,94 @@
                     </div>
                     <div class="user-info">
                         <h4>{{ request.user.first_name|default:request.user.username }}</h4>
-                        <p>Free Plan</p>
+                        <p class="user-badge">Free Plan</p>
                     </div>
                 </div>
             </div>
             
+            <!-- Navigation -->
             <nav class="sidebar-menu">
                 <div class="menu-section">
-                    <div class="menu-section-title">Главное</div>
+                    <div class="menu-section-title">Overview</div>
                     <a href="{% url 'dashboard' %}" class="menu-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">
-                        <i class="fa-solid fa-grid-2"></i> Обзор
+                        <i class="fa-solid fa-house"></i>
+                        <span>Главная</span>
                     </a>
                     <a href="{% url 'agents_list' %}" class="menu-link {% if 'agents' in request.path %}active{% endif %}">
-                        <i class="fa-solid fa-robot"></i> Агенты
+                        <i class="fa-solid fa-robot"></i>
+                        <span>Агенты</span>
                     </a>
                     <a href="{% url 'conversations_list' %}" class="menu-link {% if 'conversations' in request.path %}active{% endif %}">
-                        <i class="fa-solid fa-comments"></i> Диалоги
+                        <i class="fa-solid fa-comments"></i>
+                        <span>Диалоги</span>
+                    </a>
+                    <a href="{% url 'knowledge_base' %}" class="menu-link {% if 'knowledge' in request.path %}active{% endif %}">
+                        <i class="fa-solid fa-brain"></i>
+                        <span>База знаний</span>
                     </a>
                 </div>
                 
                 <div class="menu-section">
-                    <div class="menu-section-title">Настройки</div>
-                    <a href="{% url 'settings' %}" class="menu-link {% if 'settings' in request.path %}active{% endif %}">
-                        <i class="fa-solid fa-gear"></i> Аккаунт
-                    </a>
+                    <div class="menu-section-title">Analytics</div>
                     <a href="{% url 'analytics' %}" class="menu-link {% if 'analytics' in request.path %}active{% endif %}">
-                        <i class="fa-solid fa-chart-pie"></i> Аналитика
+                        <i class="fa-solid fa-chart-line"></i>
+                        <span>Аналитика</span>
+                    </a>
+                </div>
+
+                <div class="menu-section">
+                    <div class="menu-section-title">Settings</div>
+                    <a href="{% url 'settings' %}" class="menu-link {% if 'settings' in request.path %}active{% endif %}">
+                        <i class="fa-solid fa-gear"></i>
+                        <span>Настройки</span>
+                    </a>
+                    <a href="{% url 'pricing' %}" class="menu-link">
+                        <i class="fa-solid fa-crown"></i>
+                        <span>Upgrade</span>
                     </a>
                 </div>
             </nav>
 
+            <!-- Footer -->
             <div class="sidebar-footer">
-                <a href="{% url 'account_logout' %}" class="menu-link" style="color: #ef4444; justify-content: flex-start;">
-                    <i class="fa-solid fa-right-from-bracket"></i> Выйти
+                <a href="{% url 'account_logout' %}" class="menu-link" style="color: var(--dash-error);">
+                    <i class="fa-solid fa-arrow-right-from-bracket"></i>
+                    <span>Выйти</span>
                 </a>
             </div>
         </aside>
 
+        <!-- Main Content -->
         <main class="main-content">
-            <button id="mobileMenuBtn" style="display: none; margin-bottom: 20px; background: none; border: none; color: white; font-size: 1.5rem;">
-                <i class="fa-solid fa-bars"></i>
-            </button>
-
             {% block content %}{% endblock %}
         </main>
 
     </div>
 
+    <!-- Mobile Menu Button -->
+    <button class="mobile-menu-btn" id="mobileMenuBtn" onclick="toggleSidebar()">
+        <i class="fa-solid fa-bars"></i>
+    </button>
+
     <script>
-        const btn = document.getElementById('mobileMenuBtn');
-        const sidebar = document.getElementById('sidebar');
-        
-        // Показываем кнопку только на мобильных (через JS или CSS Media Query)
-        if(window.innerWidth <= 1024) {
-            btn.style.display = 'block';
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            sidebar.classList.toggle('open');
         }
 
-        btn.addEventListener('click', () => {
-            sidebar.classList.toggle('open');
-        });
-        
-        // Закрыть при клике вне
+        // Close sidebar when clicking outside on mobile
         document.addEventListener('click', (e) => {
-            if(window.innerWidth <= 1024 && !sidebar.contains(e.target) && !btn.contains(e.target)) {
-                sidebar.classList.remove('open');
+            if (window.innerWidth <= 1024) {
+                const sidebar = document.getElementById('sidebar');
+                const menuBtn = document.getElementById('mobileMenuBtn');
+                
+                if (!sidebar.contains(e.target) && !menuBtn.contains(e.target)) {
+                    sidebar.classList.remove('open');
+                }
             }
         });
     </script>
+
     {% block extra_js %}{% endblock %}
 </body>
 </html>

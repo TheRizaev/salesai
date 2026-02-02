@@ -5,8 +5,8 @@
 {% block content %}
 <div class="page-header">
     <div>
-        <h1 class="page-title">Мои агенты</h1>
-        <p class="page-subtitle">Управляйте своими чат-ботами</p>
+        <h1 class="page-title">🤖 Мои агенты</h1>
+        <p class="page-subtitle">Управляйте своими чат-ботами и их настройками</p>
     </div>
     <a href="{% url 'create_agent' %}" class="btn btn-primary">
         <i class="fa-solid fa-plus"></i>
@@ -35,13 +35,13 @@
                     <div class="agent-info">
                         <h3>{{ bot.name }}</h3>
                         <div class="agent-platform">
-                            <i class="fa-solid fa-circle" style="font-size: 0.4rem;"></i>
+                            <i class="fa-solid fa-circle" style="font-size: 6px;"></i>
                             {{ bot.get_platform_display }}
                         </div>
                     </div>
                 </div>
 
-                <div style="margin: 15px 0;">
+                <div style="margin: 16px 0;">
                     <span class="status-badge {% if bot.status == 'active' %}active{% else %}inactive{% endif %}">
                         <span class="status-dot"></span>
                         {% if bot.status == 'active' %}Активен{% else %}Неактивен{% endif %}
@@ -49,7 +49,7 @@
                 </div>
 
                 {% if bot.description %}
-                    <p style="color: var(--text-secondary); font-size: 0.9rem; margin: 15px 0; line-height: 1.6;">
+                    <p style="color: var(--dash-text-muted); font-size: 14px; line-height: 1.6; margin: 16px 0;">
                         {{ bot.description|truncatewords:20 }}
                     </p>
                 {% endif %}

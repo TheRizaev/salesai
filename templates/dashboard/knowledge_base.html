@@ -1,0 +1,67 @@
+{% extends 'dashboard/base.html' %}
+
+{% block title %}База знаний{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">🧠 База знаний</h1>
+        <p class="page-subtitle">Загрузите документы для обучения ваших ботов</p>
+    </div>
+    <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">
+        <i class="fa-solid fa-upload"></i>
+        Загрузить файл
+    </button>
+    <input type="file" id="fileInput" style="display: none;" accept=".pdf,.doc,.docx,.txt">
+</div>
+
+<div class="glass-card">
+    <div class="card-header">
+        <h2 class="card-title">
+            <i class="fa-solid fa-folder-open"></i>
+            Документы
+        </h2>
+        <select class="form-input" style="width: auto; min-width: 200px;">
+            <option value="">Все боты</option>
+            {% for bot in bots %}
+                <option value="{{ bot.id }}">{{ bot.name }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    
+    {% if documents %}
+        <div style="display: grid; gap: 16px;">
+            {% for doc in documents %}
+                <div style="display: flex; align-items: center; gap: 16px; padding: 16px; background: rgba(255, 255, 255, 0.02); border: 1px solid var(--dash-border); border-radius: 12px;">
+                    <div style="width: 48px; height: 48px; background: rgba(99, 102, 241, 0.1); border-radius: 12px; display: flex; align-items: center; justify-content: center; color: var(--dash-primary); font-size: 20px;">
+                        <i class="fa-solid fa-file-pdf"></i>
+                    </div>
+                    <div style="flex: 1;">
+                        <div style="font-weight: 500; margin-bottom: 4px;">{{ doc.title }}</div>
+                        <div style="font-size: 12px; color: var(--dash-text-muted);">
+                            {{ doc.bot.name }} · Загружен {{ doc.created_at|date:"d.m.Y" }}
+                        </div>
+                    </div>
+                    <button class="btn-icon btn-danger">
+                        <i class="fa-solid fa-trash"></i>
+                    </button>
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="empty-state">
+            <div class="empty-icon">
+                <i class="fa-solid fa-file-circle-plus"></i>
+            </div>
+            <h3 class="empty-title">Документов пока нет</h3>
+            <p class="empty-text">
+                Загрузите документы, чтобы ваш бот мог отвечать на вопросы на основе этой информации
+            </p>
+            <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">
+                <i class="fa-solid fa-upload"></i>
+                Загрузить первый документ
+            </button>
+        </div>
+    {% endif %}
+</div>
+{% endblock %}

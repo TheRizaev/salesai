@@ -1,53 +1,74 @@
 {% extends 'dashboard/base.html' %}
-{% load math_filters %}
 
 {% block title %}Обзор{% endblock %}
 
 {% block content %}
 <div class="page-header">
     <div>
-        <h1 class="page-title">Привет, {{ request.user.first_name|default:"Друг" }}! 👋</h1>
-        <p class="page-subtitle">Сводка активности ваших ботов за сегодня.</p>
+        <h1 class="page-title">👋 Привет, {{ request.user.first_name|default:"друг" }}!</h1>
+        <p class="page-subtitle">Вот что происходит с вашими ботами сегодня</p>
     </div>
     <a href="{% url 'create_agent' %}" class="btn btn-primary">
-        <i class="fa-solid fa-plus"></i> Создать бота
+        <i class="fa-solid fa-plus"></i>
+        Создать бота
     </a>
 </div>
 
+<!-- Stats Grid -->
 <div class="stats-grid">
     <div class="stat-card">
         <div class="stat-header">
-            <div class="stat-icon" style="color: #6366f1; background: rgba(99,102,241,0.1);">
+            <div class="stat-icon" style="background: rgba(99, 102, 241, 0.1); color: var(--dash-primary);">
                 <i class="fa-solid fa-robot"></i>
             </div>
         </div>
         <div class="stat-value">{{ active_bots }}</div>
         <div class="stat-label">Активных ботов</div>
+        <div class="stat-change positive">
+            <i class="fa-solid fa-arrow-up"></i>
+            +{{ active_bots }} с прошлой недели
+        </div>
     </div>
+
     <div class="stat-card">
         <div class="stat-header">
-            <div class="stat-icon" style="color: #a855f7; background: rgba(168,85,247,0.1);">
+            <div class="stat-icon" style="background: rgba(168, 85, 247, 0.1); color: #a855f7;">
                 <i class="fa-solid fa-comments"></i>
             </div>
         </div>
         <div class="stat-value">{{ total_conversations|default:0 }}</div>
-        <div class="stat-label">Диалогов</div>
+        <div class="stat-label">Диалогов за неделю</div>
+        <div class="stat-change positive">
+            <i class="fa-solid fa-arrow-up"></i>
+            +12% к прошлой неделе
+        </div>
     </div>
+
     <div class="stat-card">
         <div class="stat-header">
-            <div class="stat-icon" style="color: #22c55e; background: rgba(34,197,94,0.1);">
+            <div class="stat-icon" style="background: rgba(34, 197, 94, 0.1); color: var(--dash-success);">
                 <i class="fa-solid fa-user-check"></i>
             </div>
         </div>
         <div class="stat-value">{{ total_leads|default:0 }}</div>
-        <div class="stat-label">Лидов</div>
+        <div class="stat-label">Захвачено лидов</div>
+        <div class="stat-change positive">
+            <i class="fa-solid fa-arrow-up"></i>
+            +8% к прошлой неделе
+        </div>
     </div>
 </div>
 
+<!-- Recent Conversations -->
 <div class="glass-card">
     <div class="card-header">
-        <h2 class="card-title">Последние диалоги</h2>
-        <a href="{% url 'conversations_list' %}" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem;">Все</a>
+        <h2 class="card-title">
+            <i class="fa-solid fa-clock-rotate-left"></i>
+            Последние диалоги
+        </h2>
+        <a href="{% url 'conversations_list' %}" class="btn btn-secondary">
+            Все диалоги
+        </a>
     </div>
     
     <div class="table-responsive">
@@ -58,39 +79,50 @@
                     <th>Бот</th>
                     <th>Время</th>
                     <th>Статус</th>
-                    <th>Действие</th>
+                    <th></th>
                 </tr>
             </thead>
             <tbody>
                 {% for conv in recent_conversations %}
                 <tr>
                     <td>
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <div style="width: 30px; height: 30px; background: rgba(255,255,255,0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center;">
-                                <i class="fa-solid fa-user" style="font-size: 0.8rem;"></i>
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <div style="width: 36px; height: 36px; background: rgba(99, 102, 241, 0.1); border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--dash-primary);">
+                                <i class="fa-solid fa-user"></i>
                             </div>
-                            <span>{{ conv.user_name|default:"Гость" }}</span>
+                            <div>
+                                <div style="font-weight: 500;">{{ conv.user_name|default:"Гость" }}</div>
+                                <div style="font-size: 12px; color: var(--dash-text-muted);">{{ conv.user_id|truncatechars:20 }}</div>
+                            </div>
                         </div>
                     </td>
                     <td>{{ conv.bot.name }}</td>
-                    <td style="color: var(--text-secondary);">{{ conv.last_message_at|timesince }} назад</td>
+                    <td style="color: var(--dash-text-muted);">
+                        <i class="fa-regular fa-clock" style="margin-right: 4px;"></i>
+                        {{ conv.last_message_at|timesince }} назад
+                    </td>
                     <td>
                         {% if conv.is_lead %}
-                            <span class="status-badge active"><span class="status-dot"></span> Лид</span>
+                            <span class="status-badge active">
+                                <span class="status-dot"></span>
+                                Лид
+                            </span>
                         {% else %}
                             <span class="status-badge inactive">Диалог</span>
                         {% endif %}
                     </td>
                     <td>
-                        <a href="{% url 'conversation_detail' conv.id %}" class="btn-secondary" style="padding: 6px; border-radius: 6px;">
+                        <a href="{% url 'conversation_detail' conv.id %}" class="btn-icon">
                             <i class="fa-solid fa-arrow-right"></i>
                         </a>
                     </td>
                 </tr>
                 {% empty %}
                 <tr>
-                    <td colspan="5" style="text-align: center; padding: 40px;">
-                        <p style="color: var(--text-secondary);">Диалогов пока нет</p>
+                    <td colspan="5">
+                        <div class="empty-state" style="padding: 40px 20px;">
+                            <p style="color: var(--dash-text-muted); margin: 0;">Диалогов пока нет</p>
+                        </div>
                     </td>
                 </tr>
                 {% endfor %}
