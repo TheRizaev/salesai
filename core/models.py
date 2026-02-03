@@ -5,9 +5,11 @@ from django.utils import timezone
 class BotAgent(models.Model):
     """Модель чат-бота"""
     STATUS_CHOICES = [
+        ('waiting_code', 'Ожидание кода'),  # NEW
         ('active', 'Активен'),
         ('inactive', 'Неактивен'),
         ('paused', 'Приостановлен'),
+        ('invalid', 'Ошибка авторизации'),  # NEW
     ]
     
     PLATFORM_CHOICES = [
@@ -20,6 +22,18 @@ class BotAgent(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='bots')
     name = models.CharField(max_length=200, verbose_name='Название бота')
     platform = models.CharField(max_length=20, choices=PLATFORM_CHOICES, verbose_name='Платформа')
+    
+    # Telegram auth data
+    phone_number = models.CharField(max_length=20, blank=True, verbose_name='Номер телефона')
+    phone_code_hash = models.CharField(max_length=500, blank=True, verbose_name='Хеш кода')
+    session_string = models.TextField(blank=True, verbose_name='Session String')  # NEW
+    api_id = models.CharField(max_length=100, blank=True, verbose_name='API ID')
+    api_hash = models.CharField(max_length=100, blank=True, verbose_name='API Hash')
+    
+    # Промпт для AI
+    system_prompt = models.TextField(blank=True, verbose_name='Системный промпт', 
+                                     default='Ты - профессиональный sales-ассистент.')
+    
     bot_token = models.CharField(max_length=500, blank=True, verbose_name='Токен бота')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='inactive', verbose_name='Статус')
     

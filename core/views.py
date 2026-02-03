@@ -9,6 +9,20 @@ from .models import BotAgent, KnowledgeBase, Conversation, Message, Analytics
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
 import json
+from .telegram_auth import send_code_request, verify_code
+from .telegram_session import TelegramSessionManager
+import asyncio
+
+
+def run_async(coro):
+    """Helper для запуска async функций в sync контексте"""
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    return loop.run_until_complete(coro)
 
 # ===== PUBLIC VIEWS =====
 
@@ -318,4 +332,275 @@ def upload_knowledge(request, agent_id):
         'success': True,
         'message': f'Документ "{file.name}" загружен',
         'document_id': knowledge.id
+    })
+
+@login_required
+def telegram_connect_view(request, agent_id):
+    """Страница подключения Telegram"""
+    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
+    return render(request, 'dashboard/telegram_connect.html', {'bot': bot})
+
+
+@login_required
+@require_http_methods(["POST"])
+def telegram_save_credentials(request, agent_id):
+    """Шаг 1: Сохранение API ID и API Hash"""
+    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Неверный формат JSON'})
+    
+    # Безопасное приведение к строке перед strip, на случай если пришло число
+    api_id = str(data.get('api_id', '')).strip()
+    api_hash = str(data.get('api_hash', '')).strip()
+    
+    if not api_id or not api_hash:
+        return JsonResponse({
+            'success': False, 
+            'error': 'API ID и API Hash обязательны'
+        })
+    
+    # Проверка, что API ID является числом
+    if not api_id.isdigit():
+         return JsonResponse({
+            'success': False,
+            'error': 'API ID должен содержать только цифры'
+        })
+    
+    try:
+        # Проверяем конвертацию
+        int(api_id)
+    except ValueError:
+        return JsonResponse({
+            'success': False,
+            'error': 'API ID должен быть числом'
+        })
+    
+    if len(api_hash) < 30: # Немного ослабил проверку длины
+        return JsonResponse({
+            'success': False,
+            'error': 'API Hash слишком короткий'
+        })
+    
+    bot.api_id = api_id
+    bot.api_hash = api_hash
+    bot.save()
+    
+    return JsonResponse({
+        'success': True,
+        'message': 'API ключи сохранены'
+    })
+
+@login_required
+@require_http_methods(["POST"])
+def telegram_send_code(request, agent_id):
+    """Шаг 2: Отправка кода верификации"""
+    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
+    data = json.loads(request.body)
+    
+    phone_number = data.get('phone_number', '').strip()
+    
+    if not phone_number:
+        return JsonResponse({'success': False, 'error': 'Номер телефона обязателен'})
+    
+    if not bot.api_id or not bot.api_hash:
+        return JsonResponse({'success': False, 'error': 'Сначала сохраните API ключи'})
+    
+    result = run_async(
+        send_code_request(
+            phone_number=phone_number,
+            api_id=bot.api_id,
+            api_hash=bot.api_hash
+        )
+    )
+
+    if result['success']:
+        request.session[f'bot_{agent_id}_phone'] = phone_number
+        request.session[f'bot_{agent_id}_hash'] = result['phone_code_hash']
+        request.session[f'bot_{agent_id}_session_name'] = result['session_name'] 
+        request.session.modified = True
+        
+        bot.phone_number = phone_number
+        bot.phone_code_hash = result['phone_code_hash']
+        bot.status = 'waiting_code'
+        bot.save()
+        
+        return JsonResponse({
+            'success': True,
+            'message': 'Код отправлен на ваш Telegram'
+        })
+    else:
+        return JsonResponse({
+            'success': False,
+            'error': result.get('error', 'Ошибка отправки кода')
+        })
+
+
+@login_required
+@require_http_methods(["POST"])
+def telegram_verify_code(request, agent_id):
+    """Шаг 3: Верификация кода и создание session string"""
+    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
+    data = json.loads(request.body)
+    
+    code = data.get('code', '').strip()
+    password = data.get('password', '').strip() or None
+    
+    if not code:
+        return JsonResponse({'success': False, 'error': 'Код обязателен'})
+    
+    # Получаем данные из сессии
+    phone_number = request.session.get(f'bot_{agent_id}_phone')
+    phone_code_hash = request.session.get(f'bot_{agent_id}_hash')
+    session_name = request.session.get(f'bot_{agent_id}_session_name')
+    
+    if not all([phone_number, phone_code_hash, session_name]):
+        return JsonResponse({
+            'success': False,
+            'error': 'Сессия истекла. Нажмите "Назад" и начните заново.'
+        })
+    
+    if not bot.api_id or not bot.api_hash:
+        return JsonResponse({'success': False, 'error': 'API ключи не найдены'})
+    
+    # Создаём session string
+    result = run_async(
+        verify_code( 
+            phone_number=phone_number,
+            phone_code_hash=phone_code_hash,
+            code=code,
+            api_id=bot.api_id,
+            api_hash=bot.api_hash,
+            password=password
+        )
+    )
+    
+    if result['success']:
+        # Сохраняем session string
+        bot.session_string = result['session_string']
+        bot.status = 'active'
+        bot.save()
+        
+        # Очищаем сессию
+        try:
+            del request.session[f'bot_{agent_id}_phone']
+            del request.session[f'bot_{agent_id}_hash']
+            del request.session[f'bot_{agent_id}_session_name']
+            request.session.modified = True
+        except KeyError:
+            pass
+        
+        return JsonResponse({
+            'success': True,
+            'message': 'Бот успешно подключен!'
+        })
+    else:
+        if result.get('requires_2fa'):
+            return JsonResponse({
+                'success': False,
+                'error': result['error'],
+                'requires_2fa': True
+            })
+        
+        bot.status = 'invalid'
+        bot.save()
+        
+        return JsonResponse({
+            'success': False,
+            'error': result.get('error', 'Ошибка верификации')
+        })
+
+
+@login_required
+@require_http_methods(["POST"])
+def telegram_validate_session(request, agent_id):
+    """Проверка валидности session string"""
+    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
+    
+    if not bot.session_string:
+        return JsonResponse({'success': False, 'error': 'Session string не найден'})
+    
+    is_valid = run_async(
+        TelegramSessionManager.validate_session_string(
+            session_string=bot.session_string,
+            api_id=bot.api_id,
+            api_hash=bot.api_hash
+        )
+    )
+    
+    if is_valid:
+        bot.status = 'active'
+        bot.save()
+        return JsonResponse({'success': True, 'message': 'Сессия валидна'})
+    else:
+        bot.status = 'invalid'
+        bot.save()
+        return JsonResponse({'success': False, 'error': 'Сессия недействительна'})
+
+
+@login_required
+@require_http_methods(["GET"])
+def telegram_get_account_info(request, agent_id):
+    """Получение информации об аккаунте"""
+    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
+    
+    if not bot.session_string:
+        return JsonResponse({'success': False, 'error': 'Бот не подключен'})
+    
+    result = run_async(
+        TelegramSessionManager.get_account_info(
+            session_string=bot.session_string,
+            api_id=bot.api_id,
+            api_hash=bot.api_hash
+        )
+    )
+    
+    return JsonResponse(result)
+
+
+@login_required
+@require_http_methods(["POST"])
+def telegram_disconnect(request, agent_id):
+    """Отключение Telegram"""
+    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
+    
+    bot.session_string = ''
+    bot.phone_code_hash = ''
+    bot.status = 'inactive'
+    bot.save()
+    
+    return JsonResponse({'success': True, 'message': 'Telegram отключен'})
+
+
+@login_required
+@require_http_methods(["POST"])
+def update_bot_prompt(request, agent_id):
+    """Обновление промпта бота"""
+    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
+    data = json.loads(request.body)
+    
+    bot.system_prompt = data.get('system_prompt', '')
+    bot.save()
+    
+    return JsonResponse({
+        'success': True,
+        'message': 'Промпт обновлен'
+    })
+
+
+@login_required
+@require_http_methods(["POST"])
+def update_bot(request, agent_id):
+    """Обновление настроек бота"""
+    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
+    data = json.loads(request.body)
+    
+    bot.name = data.get('name', bot.name)
+    bot.description = data.get('description', bot.description)
+    bot.save()
+    
+    return JsonResponse({
+        'success': True,
+        'message': 'Настройки обновлены'
     })
