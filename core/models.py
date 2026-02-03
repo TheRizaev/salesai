@@ -26,8 +26,8 @@ class BotAgent(models.Model):
     # Telegram auth data
     phone_number = models.CharField(max_length=20, blank=True, verbose_name='Номер телефона')
     phone_code_hash = models.CharField(max_length=500, blank=True, verbose_name='Хеш кода')
-    session_string = models.TextField(blank=True, verbose_name='Session String')  # NEW
-    api_id = models.CharField(max_length=100, blank=True, verbose_name='API ID')
+    session_string = models.TextField(blank=True, null=True, verbose_name='Session String')
+    api_id = models.CharField(max_length=50, null=True, blank=True, verbose_name='API ID')
     api_hash = models.CharField(max_length=100, blank=True, verbose_name='API Hash')
     
     # Промпт для AI

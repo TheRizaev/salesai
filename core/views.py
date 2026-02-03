@@ -383,7 +383,7 @@ def telegram_save_credentials(request, agent_id):
             'error': 'API Hash слишком короткий'
         })
     
-    bot.api_id = api_id
+    bot.api_id = int(api_id)
     bot.api_hash = api_hash
     bot.save()
     
@@ -407,10 +407,19 @@ def telegram_send_code(request, agent_id):
     if not bot.api_id or not bot.api_hash:
         return JsonResponse({'success': False, 'error': 'Сначала сохраните API ключи'})
     
+    try:
+        api_id_int = int(bot.api_id) if isinstance(bot.api_id, str) else bot.api_id
+    except (ValueError, TypeError) as e:
+        return JsonResponse({'success': False, 'error': f'API ID в базе данных повреждён: {bot.api_id}'})
+    
+    print(f"DEBUG: bot.api_id = {repr(bot.api_id)}")
+    print(f"DEBUG: type = {type(bot.api_id)}")
+    print(f"DEBUG: is digit string = {str(bot.api_id).isdigit() if bot.api_id else 'N/A'}")
+    print(f"DEBUG: phone_number = {repr(phone_number)}, type = {type(phone_number)}")
     result = run_async(
         send_code_request(
             phone_number=phone_number,
-            api_id=bot.api_id,
+            api_id=api_id_int,  # Передаём int
             api_hash=bot.api_hash
         )
     )
@@ -418,7 +427,7 @@ def telegram_send_code(request, agent_id):
     if result['success']:
         request.session[f'bot_{agent_id}_phone'] = phone_number
         request.session[f'bot_{agent_id}_hash'] = result['phone_code_hash']
-        request.session[f'bot_{agent_id}_session_name'] = result['session_name'] 
+        request.session[f'bot_{agent_id}_temp_session'] = result['temp_session_string']
         request.session.modified = True
         
         bot.phone_number = phone_number
@@ -436,7 +445,6 @@ def telegram_send_code(request, agent_id):
             'error': result.get('error', 'Ошибка отправки кода')
         })
 
-
 @login_required
 @require_http_methods(["POST"])
 def telegram_verify_code(request, agent_id):
@@ -453,9 +461,9 @@ def telegram_verify_code(request, agent_id):
     # Получаем данные из сессии
     phone_number = request.session.get(f'bot_{agent_id}_phone')
     phone_code_hash = request.session.get(f'bot_{agent_id}_hash')
-    session_name = request.session.get(f'bot_{agent_id}_session_name')
+    temp_session_string = request.session.get(f'bot_{agent_id}_temp_session')  # ИСПРАВЛЕНО
     
-    if not all([phone_number, phone_code_hash, session_name]):
+    if not all([phone_number, phone_code_hash, temp_session_string]):  # ИСПРАВЛЕНО
         return JsonResponse({
             'success': False,
             'error': 'Сессия истекла. Нажмите "Назад" и начните заново.'
@@ -463,21 +471,24 @@ def telegram_verify_code(request, agent_id):
     
     if not bot.api_id or not bot.api_hash:
         return JsonResponse({'success': False, 'error': 'API ключи не найдены'})
-    
-    # Создаём session string
-    result = run_async(
-        verify_code( 
-            phone_number=phone_number,
-            phone_code_hash=phone_code_hash,
-            code=code,
-            api_id=bot.api_id,
-            api_hash=bot.api_hash,
-            password=password
-        )
-    )
+
+    result = run_async(verify_code(
+        phone_number=phone_number,
+        phone_code_hash=phone_code_hash,
+        code=code,
+        api_id=bot.api_id,
+        api_hash=bot.api_hash,
+        temp_session_string=temp_session_string, 
+        password=password
+    ))
     
     if result['success']:
-        # Сохраняем session string
+        if not result.get('session_string'):
+            return JsonResponse({
+                'success': False,
+                'error': 'Session string пустой. Ошибка авторизации.'
+            })
+        
         bot.session_string = result['session_string']
         bot.status = 'active'
         bot.save()
@@ -486,7 +497,7 @@ def telegram_verify_code(request, agent_id):
         try:
             del request.session[f'bot_{agent_id}_phone']
             del request.session[f'bot_{agent_id}_hash']
-            del request.session[f'bot_{agent_id}_session_name']
+            del request.session[f'bot_{agent_id}_temp_session']  # ИСПРАВЛЕНО
             request.session.modified = True
         except KeyError:
             pass
@@ -510,7 +521,6 @@ def telegram_verify_code(request, agent_id):
             'success': False,
             'error': result.get('error', 'Ошибка верификации')
         })
-
 
 @login_required
 @require_http_methods(["POST"])
