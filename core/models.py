@@ -5,11 +5,11 @@ from django.utils import timezone
 class BotAgent(models.Model):
     """Модель чат-бота"""
     STATUS_CHOICES = [
-        ('waiting_code', 'Ожидание кода'),  # NEW
+        ('waiting_code', 'Ожидание кода'),
         ('active', 'Активен'),
         ('inactive', 'Неактивен'),
         ('paused', 'Приостановлен'),
-        ('invalid', 'Ошибка авторизации'),  # NEW
+        ('invalid', 'Ошибка авторизации'),
     ]
     
     PLATFORM_CHOICES = [
@@ -57,15 +57,52 @@ class BotAgent(models.Model):
         return f"{self.name} ({self.platform})"
 
 
+def knowledge_base_upload_path(instance, filename):
+    """Генерирует путь для загрузки: knowledge_base/username/filename"""
+    # Получаем email пользователя
+    if instance.user and instance.user.email:
+        # Берем часть до @
+        username = instance.user.email.split('@')[0]
+    elif instance.user and instance.user.username:
+        username = instance.user.username
+    else:
+        username = 'anonymous'
+    
+    # Очищаем username от недопустимых символов
+    import re
+    username = re.sub(r'[^\w\-.]', '_', username)
+    
+    return f'knowledge_base/{username}/{filename}'
+
+
 class KnowledgeBase(models.Model):
     """База знаний для RAG"""
-    bot = models.ForeignKey(BotAgent, on_delete=models.CASCADE, related_name='knowledge_base')
+    FILE_TYPE_CHOICES = [
+        ('pdf', 'PDF'),
+        ('doc', 'Word (DOC)'),
+        ('docx', 'Word (DOCX)'),
+        ('txt', 'Text'),
+        ('csv', 'CSV'),
+        ('xlsx', 'Excel (XLSX)'),
+        ('xls', 'Excel (XLS)'),
+        ('json', 'JSON'),
+        ('md', 'Markdown'),
+        ('other', 'Другой'),
+    ]
+    
+    # Связь может быть с ботом ИЛИ напрямую с пользователем
+    bot = models.ForeignKey(BotAgent, on_delete=models.CASCADE, related_name='knowledge_base', null=True, blank=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='knowledge_base', null=True, blank=True)
+    
     title = models.CharField(max_length=300, verbose_name='Название документа')
-    file = models.FileField(upload_to='knowledge_base/', verbose_name='Файл')
-    file_type = models.CharField(max_length=10, verbose_name='Тип файла')
+    description = models.TextField(blank=True, verbose_name='Описание')
+    file = models.FileField(upload_to=knowledge_base_upload_path, verbose_name='Файл')
+    file_type = models.CharField(max_length=10, choices=FILE_TYPE_CHOICES, verbose_name='Тип файла')
+    file_size = models.BigIntegerField(default=0, verbose_name='Размер файла (байт)')
     content_extracted = models.TextField(blank=True, verbose_name='Извлеченный текст')
     
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Загружен')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='Обновлен')
     
     class Meta:
         verbose_name = 'Документ базы знаний'
@@ -74,6 +111,48 @@ class KnowledgeBase(models.Model):
     
     def __str__(self):
         return self.title
+    
+    @property
+    def file_size_display(self):
+        """Возвращает размер файла в человекочитаемом формате"""
+        size = self.file_size
+        for unit in ['Б', 'КБ', 'МБ', 'ГБ']:
+            if size < 1024:
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{size:.1f} ТБ"
+    
+    @property
+    def file_icon(self):
+        """Возвращает иконку FontAwesome для типа файла"""
+        icons = {
+            'pdf': 'fa-file-pdf',
+            'doc': 'fa-file-word',
+            'docx': 'fa-file-word',
+            'txt': 'fa-file-lines',
+            'csv': 'fa-file-csv',
+            'xlsx': 'fa-file-excel',
+            'xls': 'fa-file-excel',
+            'json': 'fa-file-code',
+            'md': 'fa-file-lines',
+        }
+        return icons.get(self.file_type, 'fa-file')
+    
+    @property
+    def file_color(self):
+        """Возвращает цвет для типа файла"""
+        colors = {
+            'pdf': '#ef4444',
+            'doc': '#3b82f6',
+            'docx': '#3b82f6',
+            'txt': '#6b7280',
+            'csv': '#22c55e',
+            'xlsx': '#22c55e',
+            'xls': '#22c55e',
+            'json': '#f59e0b',
+            'md': '#8b5cf6',
+        }
+        return colors.get(self.file_type, '#6b7280')
 
 
 class Conversation(models.Model):

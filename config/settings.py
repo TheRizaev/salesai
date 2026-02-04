@@ -1,5 +1,5 @@
 """
-Django settings for SalesAI Bot project.
+Django settings for The Closer project.
 """
 
 from pathlib import Path

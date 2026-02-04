@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-SalesAI Bot Worker - Запускатор Telegram ботов с эмуляцией живого общения
+The Closer Worker - Запускатор Telegram ботов с эмуляцией живого общения
 Адаптировано для OpenAI >= 1.0.0
 """
 import asyncio
@@ -127,7 +127,7 @@ async def get_chatgpt_response(message_text, system_prompt):
         response = await loop.run_in_executor(
             None,
             lambda: ai_client.chat.completions.create(
-                model="gpt-4o", # или gpt-3.5-turbo
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": message_text}

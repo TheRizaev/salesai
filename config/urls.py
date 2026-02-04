@@ -27,10 +27,12 @@ urlpatterns = [
     path('dashboard/analytics/', views.analytics_view, name='analytics'),
     path('dashboard/settings/', views.settings_view, name='settings'),
     
-    # API endpoints
+    # API endpoints - Bots
     path('api/agents/<int:agent_id>/toggle/', views.toggle_bot_status, name='toggle_bot_status'),
     path('api/agents/<int:agent_id>/delete/', views.delete_bot, name='delete_bot'),
     path('api/agents/<int:agent_id>/upload/', views.upload_knowledge, name='upload_knowledge'),
+    path('api/agents/<int:agent_id>/update-prompt/', views.update_bot_prompt, name='update_bot_prompt'),
+    path('api/agents/<int:agent_id>/update/', views.update_bot, name='update_bot'),
 
     # Telegram Authentication
     path('dashboard/agents/<int:agent_id>/telegram-connect/', views.telegram_connect_view, name='telegram_connect'),
@@ -42,8 +44,14 @@ urlpatterns = [
     path('api/agents/<int:agent_id>/telegram/validate-session/', views.telegram_validate_session, name='telegram_validate_session'),
     path('api/agents/<int:agent_id>/telegram/account-info/', views.telegram_get_account_info, name='telegram_account_info'),
     path('api/agents/<int:agent_id>/telegram/disconnect/', views.telegram_disconnect, name='telegram_disconnect'),
-    path('api/agents/<int:agent_id>/update-prompt/', views.update_bot_prompt, name='update_bot_prompt'),
-    path('api/agents/<int:agent_id>/update/', views.update_bot, name='update_bot'),
+    
+    # Knowledge Base API endpoints
+    path('api/knowledge/upload/', views.upload_knowledge_file, name='upload_knowledge_file'),
+    path('api/knowledge/upload-multiple/', views.upload_multiple_files, name='upload_multiple_files'),
+    path('api/knowledge/<int:document_id>/', views.get_knowledge_document, name='get_knowledge_document'),
+    path('api/knowledge/<int:document_id>/update/', views.update_knowledge_document, name='update_knowledge_document'),
+    path('api/knowledge/<int:document_id>/delete/', views.delete_knowledge_document, name='delete_knowledge_document'),
+    path('api/knowledge/delete-multiple/', views.delete_multiple_documents, name='delete_multiple_documents'),
 ]
 
 if settings.DEBUG:

@@ -25,7 +25,7 @@ async def send_code_request(phone_number, api_id, api_hash):
     
     # Временная директория для сессии
     temp_dir = tempfile.gettempdir()
-    session_file = os.path.join(temp_dir, f"salesai_session_{api_id_int}_{hash(phone_number) & 0xFFFFFFFF}")
+    session_file = os.path.join(temp_dir, f"thecloser_session_{api_id_int}_{hash(phone_number) & 0xFFFFFFFF}")
     
     # Удаляем старую сессию если есть
     for ext in ['', '.session', '.session-journal']:
