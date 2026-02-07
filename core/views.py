@@ -11,6 +11,7 @@ from django.views.decorators.http import require_http_methods
 from django.core.paginator import Paginator
 import json
 import os
+import datetime
 
 # Допустимые расширения файлов
 ALLOWED_EXTENSIONS = {
@@ -518,7 +519,6 @@ def delete_multiple_documents(request):
 
 @login_required
 def analytics_view(request):
-    """Страница аналитики"""
     bot_id = request.GET.get('bot')
     
     user_bots = BotAgent.objects.filter(user=request.user)
@@ -833,3 +833,339 @@ def update_bot(request, agent_id):
         'success': True,
         'message': 'Настройки обновлены'
     })
+    
+
+@login_required
+@require_http_methods(["GET"])
+def get_analytics_summary(request):
+    """Получение сводной статистики"""
+    agent_id = request.GET.get('agent_id', 'all')
+    channel = request.GET.get('channel', 'all')
+    date_from = request.GET.get('date_from')
+    date_to = request.GET.get('date_to')
+    period = request.GET.get('period', '7days')
+    
+    # Определяем временной диапазон
+    now = timezone.now()
+    if period == 'today':
+        start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif period == 'yesterday':
+        start_date = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        now = start_date + timedelta(days=1)
+    elif period == '7days':
+        start_date = now - timedelta(days=7)
+    elif period == '30days':
+        start_date = now - timedelta(days=30)
+    elif period == '90days':
+        start_date = now - timedelta(days=90)
+    elif period == 'year':
+        start_date = now - timedelta(days=365)
+    else:
+        start_date = now - timedelta(days=7)
+    
+    # Если заданы конкретные даты
+    if date_from:
+        start_date = datetime.strptime(date_from, '%Y-%m-%d')
+    if date_to:
+        now = datetime.strptime(date_to, '%Y-%m-%d') + timedelta(days=1)
+    
+    # Здесь должны быть реальные запросы к базе данных
+    # Пока возвращаем демо-данные
+    
+    return JsonResponse({
+        'success': True,
+        'data': {
+            'total_conversations': 2847,
+            'total_leads': 1234,
+            'conversion_rate': 43.3,
+            'avg_response_time': 1.2,
+            'handoff_rate': 12.4,
+            'satisfaction_score': 4.7,
+            'changes': {
+                'conversations': 12.5,
+                'leads': 8.3,
+                'conversion': 2.1,
+                'response_time': -15,
+                'handoff': 3.2,
+                'satisfaction': 0.2
+            }
+        }
+    })
+
+
+@login_required
+@require_http_methods(["GET"])
+def get_conversations_chart(request):
+    """Получение данных для графика диалогов"""
+    agent_id = request.GET.get('agent_id', 'all')
+    channel = request.GET.get('channel', 'all')
+    period = request.GET.get('period', '7days')
+    
+    # Определяем количество дней
+    days_map = {
+        'today': 1,
+        'yesterday': 1,
+        '7days': 7,
+        '30days': 30,
+        '90days': 90,
+        'year': 365
+    }
+    days = days_map.get(period, 7)
+    
+    # Генерируем демо-данные
+    import random
+    labels = []
+    conversations = []
+    leads = []
+    
+    for i in range(min(days, 30)):
+        date = (timezone.now() - timedelta(days=days-1-i)).strftime('%Y-%m-%d')
+        labels.append(date)
+        conversations.append(random.randint(60, 150))
+        leads.append(random.randint(20, 70))
+    
+    return JsonResponse({
+        'success': True,
+        'data': {
+            'labels': labels,
+            'datasets': [
+                {
+                    'label': 'Диалоги',
+                    'data': conversations
+                },
+                {
+                    'label': 'Лиды',
+                    'data': leads
+                }
+            ]
+        }
+    })
+
+
+@login_required
+@require_http_methods(["GET"])
+def get_channels_chart(request):
+    """Получение данных по каналам"""
+    # Демо-данные
+    return JsonResponse({
+        'success': True,
+        'data': {
+            'labels': ['Telegram', 'WhatsApp', 'Сайт', 'Instagram'],
+            'values': [1234, 892, 456, 265],
+            'colors': ['#0088cc', '#25D366', '#6366f1', '#E4405F']
+        }
+    })
+
+
+@login_required
+@require_http_methods(["GET"])
+def get_funnel_data(request):
+    """Получение данных воронки конверсии"""
+    return JsonResponse({
+        'success': True,
+        'data': {
+            'stages': [
+                {'label': 'Посетители', 'value': 10234, 'percent': 100},
+                {'label': 'Начали диалог', 'value': 6652, 'percent': 65},
+                {'label': 'Квалифицированы', 'value': 3582, 'percent': 35},
+                {'label': 'Сделки', 'value': 1842, 'percent': 18}
+            ]
+        }
+    })
+
+
+@login_required
+@require_http_methods(["GET"])
+def get_response_time_distribution(request):
+    """Получение распределения времени ответа"""
+    return JsonResponse({
+        'success': True,
+        'data': {
+            'labels': ['<1s', '1-2s', '2-3s', '3-5s', '5-10s', '>10s'],
+            'values': [1250, 890, 450, 180, 60, 17]
+        }
+    })
+
+
+@login_required
+@require_http_methods(["GET"])
+def get_activity_heatmap(request):
+    """Получение тепловой карты активности"""
+    import random
+    
+    days = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+    data = {}
+    
+    for day_idx, day in enumerate(days):
+        data[day] = {}
+        is_weekend = day_idx >= 5
+        
+        for hour in range(24):
+            is_work_hours = 9 <= hour <= 18
+            is_peak_hours = (10 <= hour <= 12) or (14 <= hour <= 17)
+            
+            if is_weekend:
+                level = random.randint(0, 1)
+            elif is_peak_hours:
+                level = random.randint(4, 5)
+            elif is_work_hours:
+                level = random.randint(2, 3)
+            elif 7 <= hour <= 22:
+                level = random.randint(1, 2)
+            else:
+                level = 0
+                
+            value = level * 15 + random.randint(0, 15)
+            data[day][hour] = {'level': level, 'value': value}
+    
+    return JsonResponse({
+        'success': True,
+        'data': data
+    })
+
+
+@login_required
+@require_http_methods(["GET"])
+def get_agents_performance(request):
+    """Получение статистики по агентам"""
+    # Демо-данные
+    agents = [
+        {
+            'id': 1,
+            'name': 'AI Продавец',
+            'type': 'Продажи',
+            'avatar': '🤖',
+            'conversations': 1234,
+            'leads': 567,
+            'conversion': 46,
+            'response_time': '0.8s',
+            'rating': 4.8,
+            'status': 'active'
+        },
+        {
+            'id': 2,
+            'name': 'Техподдержка',
+            'type': 'Поддержка',
+            'avatar': '💬',
+            'conversations': 892,
+            'leads': None,
+            'conversion': 78,
+            'response_time': '1.2s',
+            'rating': 4.6,
+            'status': 'active'
+        },
+        {
+            'id': 3,
+            'name': 'HR Ассистент',
+            'type': 'HR',
+            'avatar': '👔',
+            'conversations': 721,
+            'leads': 312,
+            'conversion': 43,
+            'response_time': '1.5s',
+            'rating': 4.9,
+            'status': 'training'
+        }
+    ]
+    
+    return JsonResponse({
+        'success': True,
+        'data': agents
+    })
+
+
+@login_required
+@require_http_methods(["GET"])
+def get_leads_status(request):
+    """Получение статусов лидов"""
+    return JsonResponse({
+        'success': True,
+        'data': {
+            'labels': ['Новые', 'В работе', 'Квалифицированы', 'Закрыты', 'Отказ'],
+            'values': [320, 450, 280, 180, 90],
+            'colors': [
+                'rgba(99, 102, 241, 0.7)',
+                'rgba(59, 130, 246, 0.7)',
+                'rgba(34, 197, 94, 0.7)',
+                'rgba(139, 92, 246, 0.7)',
+                'rgba(239, 68, 68, 0.5)'
+            ]
+        }
+    })
+
+
+@login_required
+@require_http_methods(["GET"])
+def get_satisfaction_trend(request):
+    """Получение тренда удовлетворённости"""
+    import random
+    
+    labels = []
+    values = []
+    
+    for i in range(14):
+        date = (timezone.now() - timedelta(days=13-i)).strftime('%Y-%m-%d')
+        labels.append(date)
+        values.append(round(random.uniform(4.4, 4.9), 1))
+    
+    return JsonResponse({
+        'success': True,
+        'data': {
+            'labels': labels,
+            'values': values
+        }
+    })
+
+
+@login_required
+@require_http_methods(["GET"])
+def get_comparison_data(request):
+    """Получение данных сравнения периодов"""
+    return JsonResponse({
+        'success': True,
+        'data': {
+            'conversations': {
+                'current': 2847,
+                'previous': 2531,
+                'change': 12.5
+            },
+            'leads': {
+                'current': 1234,
+                'previous': 1139,
+                'change': 8.3
+            },
+            'conversion': {
+                'current': 43.3,
+                'previous': 41.2,
+                'change': 2.1
+            },
+            'response_time': {
+                'current': 1.2,
+                'previous': 1.35,
+                'change': -11.1
+            }
+        }
+    })
+
+
+@login_required
+@require_http_methods(["POST"])
+def export_analytics(request):
+    """Экспорт аналитики"""
+    try:
+        data = json.loads(request.body)
+        export_format = data.get('format', 'xlsx')
+        
+        # Здесь должна быть логика экспорта
+        # Возвращаем ссылку на файл
+        
+        return JsonResponse({
+            'success': True,
+            'message': 'Экспорт создан',
+            'download_url': '/media/exports/analytics_export.xlsx'
+        })
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': str(e)
+        })

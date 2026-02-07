@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Dashboard{% endblock %} — SalesAI</title>
+    <title>{% block title %}Dashboard{% endblock %} — The Closer</title>
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -30,7 +30,7 @@
                 <div class="sidebar-logo-icon">
                     <i class="fa-solid fa-brain"></i>
                 </div>
-                <span class="sidebar-logo-text">SalesAI</span>
+                <span class="sidebar-logo-text">The Closer</span>
             </a>
 
             <!-- User Profile -->
@@ -73,6 +73,10 @@
                     <a href="{% url 'analytics' %}" class="menu-link {% if 'analytics' in request.path %}active{% endif %}">
                         <i class="fa-solid fa-chart-line"></i>
                         <span>Аналитика</span>
+                    </a>
+                    <a href="{% url 'integrations' %}" class="menu-link {% if 'integrations' in request.path %}active{% endif %}">
+                        <i class="fa-solid fa-plug"></i>
+                        <span>Интеграции</span>
                     </a>
                 </div>
 

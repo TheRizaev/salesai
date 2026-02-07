@@ -217,3 +217,107 @@ class Analytics(models.Model):
     
     def __str__(self):
         return f"{self.bot.name} - {self.date}"
+    
+class CRMIntegration(models.Model):
+    """Базовая модель CRM интеграции"""
+    CRM_CHOICES = [
+        ('bitrix24', 'Bitrix24'),
+        ('amocrm', 'AmoCRM'),
+        ('moysklad', 'МойСклад'),
+        ('google_sheets', 'Google Sheets'),
+    ]
+    
+    STATUS_CHOICES = [
+        ('disconnected', 'Отключено'),
+        ('connecting', 'Подключение...'),
+        ('connected', 'Подключено'),
+        ('error', 'Ошибка'),
+    ]
+    
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='crm_integrations')
+    crm_type = models.CharField(max_length=20, choices=CRM_CHOICES, verbose_name='Тип CRM')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='disconnected', verbose_name='Статус')
+    
+    # Общие поля
+    domain = models.CharField(max_length=255, blank=True, verbose_name='Домен/URL')
+    
+    # OAuth токены
+    access_token = models.TextField(blank=True, verbose_name='Access Token')
+    refresh_token = models.TextField(blank=True, verbose_name='Refresh Token')
+    token_expires_at = models.DateTimeField(null=True, blank=True, verbose_name='Срок действия токена')
+    
+    # Webhook (для Bitrix24)
+    webhook_url = models.CharField(max_length=500, blank=True, verbose_name='Webhook URL')
+    
+    # API Key (для AmoCRM)
+    api_key = models.CharField(max_length=255, blank=True, verbose_name='API Key')
+    
+    # Google Sheets специфичные поля
+    spreadsheet_id = models.CharField(max_length=255, blank=True, verbose_name='ID таблицы')
+    sheet_name = models.CharField(max_length=100, blank=True, default='Sheet1', verbose_name='Название листа')
+    credentials_json = models.TextField(blank=True, verbose_name='Google Credentials JSON')
+    
+    # Дополнительные настройки (JSON)
+    settings = models.JSONField(default=dict, blank=True, verbose_name='Настройки')
+    
+    # Статистика
+    last_sync_at = models.DateTimeField(null=True, blank=True, verbose_name='Последняя синхронизация')
+    leads_synced = models.IntegerField(default=0, verbose_name='Синхронизировано лидов')
+    
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Создано')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='Обновлено')
+    
+    class Meta:
+        verbose_name = 'CRM Интеграция'
+        verbose_name_plural = 'CRM Интеграции'
+        unique_together = ['user', 'crm_type']
+    
+    def __str__(self):
+        return f"{self.user.email} - {self.get_crm_type_display()}"
+    
+    @property
+    def is_connected(self):
+        return self.status == 'connected'
+    
+    @property
+    def is_token_expired(self):
+        if not self.token_expires_at:
+            return True
+        return timezone.now() >= self.token_expires_at
+
+
+class CRMSyncLog(models.Model):
+    """Лог синхронизации с CRM"""
+    ACTION_CHOICES = [
+        ('create_lead', 'Создание лида'),
+        ('update_lead', 'Обновление лида'),
+        ('create_contact', 'Создание контакта'),
+        ('create_order', 'Создание заказа'),
+        ('sync_products', 'Синхронизация товаров'),
+        ('append_row', 'Добавление строки'),
+        ('sync_all', 'Полная синхронизация'),
+    ]
+    
+    STATUS_CHOICES = [
+        ('success', 'Успешно'),
+        ('error', 'Ошибка'),
+        ('pending', 'В процессе'),
+    ]
+    
+    integration = models.ForeignKey(CRMIntegration, on_delete=models.CASCADE, related_name='sync_logs')
+    action = models.CharField(max_length=50, choices=ACTION_CHOICES, verbose_name='Действие')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name='Статус')
+    
+    request_data = models.JSONField(default=dict, blank=True, verbose_name='Данные запроса')
+    response_data = models.JSONField(default=dict, blank=True, verbose_name='Ответ')
+    error_message = models.TextField(blank=True, verbose_name='Сообщение об ошибке')
+    
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Создано')
+    
+    class Meta:
+        verbose_name = 'Лог синхронизации'
+        verbose_name_plural = 'Логи синхронизации'
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"{self.integration} - {self.get_action_display()} - {self.created_at}"
