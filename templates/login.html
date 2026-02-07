@@ -44,7 +44,13 @@
                 {% csrf_token %}
                 <div class="form-group">
                     <label>Email</label>
-                    <input type="email" name="login" placeholder="name@company.com" required>
+                    <input 
+                        type="email" 
+                        name="email"  class="auth-input" 
+                        placeholder="you@company.com"
+                        required
+                        autocomplete="email"
+                    >
                 </div>
                 <div class="form-group">
                     <div style="display:flex; justify-content:space-between;">

@@ -1,117 +1,270 @@
+# core/models.py
+"""
+Модели базы данных для проекта SalesAI
+Включает: Боты, Диалоги, Сообщения, Базу знаний (с RAG), Аналитику, CRM
+"""
+
 from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
+from pgvector.django import VectorField
+import re
+
+# ============================================
+# HELPER FUNCTIONS
+# ============================================
+
+def knowledge_base_upload_path(instance, filename):
+    """Генерирует путь для загрузки: knowledge_base/bot_id/filename"""
+    bot_name = instance.bot.name if instance.bot else 'common'
+    # Очищаем имя от недопустимых символов
+    clean_name = re.sub(r'[^\w\-.]', '_', bot_name)
+    return f'knowledge_base/{clean_name}/{filename}'
+
+# ============================================
+# МОДЕЛЬ: БОТ-АССИСТЕНТ
+# ============================================
 
 class BotAgent(models.Model):
-    """Модель чат-бота"""
-    STATUS_CHOICES = [
-        ('waiting_code', 'Ожидание кода'),
-        ('active', 'Активен'),
-        ('inactive', 'Неактивен'),
-        ('paused', 'Приостановлен'),
-        ('invalid', 'Ошибка авторизации'),
-    ]
+    """Модель бота-ассистента"""
     
     PLATFORM_CHOICES = [
         ('telegram', 'Telegram'),
         ('whatsapp', 'WhatsApp'),
-        ('vk', 'VK'),
         ('instagram', 'Instagram'),
+        ('vk', 'VK'),
     ]
     
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='bots')
-    name = models.CharField(max_length=200, verbose_name='Название бота')
-    platform = models.CharField(max_length=20, choices=PLATFORM_CHOICES, verbose_name='Платформа')
+    STATUS_CHOICES = [
+        ('active', 'Активен'),
+        ('paused', 'На паузе'),
+        ('inactive', 'Неактивен'),
+        ('waiting_code', 'Ожидание кода'), # Для Telegram Auth
+        ('error', 'Ошибка'),
+    ]
     
-    # Telegram auth data
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='bots',
+        verbose_name='Владелец'
+    )
+    
+    name = models.CharField(max_length=200, verbose_name='Название бота')
+    description = models.TextField(blank=True, verbose_name='Описание')
+    avatar = models.ImageField(upload_to='bot_avatars/', blank=True, null=True, verbose_name='Аватар')
+    
+    platform = models.CharField(
+        max_length=20,
+        choices=PLATFORM_CHOICES,
+        verbose_name='Платформа'
+    )
+    
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='inactive',
+        verbose_name='Статус'
+    )
+    
+    # --- Telegram UserBot Auth Data (Восстановлено) ---
     phone_number = models.CharField(max_length=20, blank=True, verbose_name='Номер телефона')
     phone_code_hash = models.CharField(max_length=500, blank=True, verbose_name='Хеш кода')
     session_string = models.TextField(blank=True, null=True, verbose_name='Session String')
     api_id = models.CharField(max_length=50, null=True, blank=True, verbose_name='API ID')
     api_hash = models.CharField(max_length=100, blank=True, verbose_name='API Hash')
     
-    # Промпт для AI
-    system_prompt = models.TextField(blank=True, verbose_name='Системный промпт', 
-                                     default='Ты - профессиональный sales-ассистент.')
+    # --- Токены для Bot API (Webhook) ---
+    telegram_token = models.CharField(max_length=200, blank=True, verbose_name='Telegram Bot Token')
+    whatsapp_token = models.CharField(max_length=200, blank=True, verbose_name='WhatsApp Token')
     
-    bot_token = models.CharField(max_length=500, blank=True, verbose_name='Токен бота')
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='inactive', verbose_name='Статус')
+    # --- Настройки AI ---
+    system_prompt = models.TextField(
+        default='Ты - полезный AI ассистент. Отвечай четко и по существу.',
+        verbose_name='Системный промпт'
+    )
     
-    avatar = models.ImageField(upload_to='bot_avatars/', blank=True, null=True, verbose_name='Аватар')
-    description = models.TextField(blank=True, verbose_name='Описание')
+    openai_model = models.CharField(
+        max_length=50,
+        default='gpt-4o-mini',
+        verbose_name='Модель OpenAI'
+    )
     
-    # Статистика
-    total_conversations = models.IntegerField(default=0, verbose_name='Всего диалогов')
-    total_messages = models.IntegerField(default=0, verbose_name='Всего сообщений')
-    conversion_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0, verbose_name='Конверсия %')
+    temperature = models.FloatField(default=0.7, verbose_name='Temperature')
+    max_tokens = models.IntegerField(default=500, verbose_name='Max tokens')
     
+    # --- Настройки RAG ---
+    use_rag = models.BooleanField(
+        default=True,
+        verbose_name='Использовать базу знаний (RAG)'
+    )
+    
+    rag_top_k = models.IntegerField(
+        default=5,
+        verbose_name='Количество релевантных фрагментов'
+    )
+    
+    # Метаданные
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Создан')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='Обновлен')
     
     class Meta:
+        db_table = 'bot_agents'
         verbose_name = 'Бот'
         verbose_name_plural = 'Боты'
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', 'status']),
+            models.Index(fields=['platform']),
+        ]
     
     def __str__(self):
-        return f"{self.name} ({self.platform})"
+        return f"{self.name} ({self.get_platform_display()})"
 
 
-def knowledge_base_upload_path(instance, filename):
-    """Генерирует путь для загрузки: knowledge_base/username/filename"""
-    # Получаем email пользователя
-    if instance.user and instance.user.email:
-        # Берем часть до @
-        username = instance.user.email.split('@')[0]
-    elif instance.user and instance.user.username:
-        username = instance.user.username
-    else:
-        username = 'anonymous'
+# ============================================
+# МОДЕЛЬ: ДИАЛОГ (CONVERSATION)
+# ============================================
+
+class Conversation(models.Model):
+    """Модель диалога с пользователем"""
     
-    # Очищаем username от недопустимых символов
-    import re
-    username = re.sub(r'[^\w\-.]', '_', username)
+    bot = models.ForeignKey(
+        BotAgent,
+        on_delete=models.CASCADE,
+        related_name='conversations',
+        verbose_name='Бот'
+    )
     
-    return f'knowledge_base/{username}/{filename}'
+    user_id = models.CharField(
+        max_length=200,
+        verbose_name='ID пользователя',
+        help_text='ID пользователя в мессенджере'
+    )
+    
+    user_name = models.CharField(max_length=200, blank=True, verbose_name='Имя пользователя')
+    
+    is_lead = models.BooleanField(default=False, verbose_name='Лид')
+    lead_email = models.EmailField(blank=True, verbose_name='Email лида')
+    lead_phone = models.CharField(max_length=20, blank=True, verbose_name='Телефон лида')
+    
+    started_at = models.DateTimeField(default=timezone.now, verbose_name='Начало диалога')
+    last_message_at = models.DateTimeField(default=timezone.now, verbose_name='Последнее сообщение')
+    
+    class Meta:
+        db_table = 'conversations'
+        verbose_name = 'Диалог'
+        verbose_name_plural = 'Диалоги'
+        ordering = ['-last_message_at']
+        indexes = [
+            models.Index(fields=['bot', 'user_id']),
+            models.Index(fields=['bot', 'is_lead']),
+            models.Index(fields=['started_at']),
+        ]
+    
+    def __str__(self):
+        return f"Диалог с {self.user_name or self.user_id}"
 
 
-class KnowledgeBase(models.Model):
-    """База знаний для RAG"""
-    FILE_TYPE_CHOICES = [
-        ('pdf', 'PDF'),
-        ('doc', 'Word (DOC)'),
-        ('docx', 'Word (DOCX)'),
-        ('txt', 'Text'),
-        ('csv', 'CSV'),
-        ('xlsx', 'Excel (XLSX)'),
-        ('xls', 'Excel (XLS)'),
-        ('json', 'JSON'),
-        ('md', 'Markdown'),
-        ('other', 'Другой'),
+# ============================================
+# МОДЕЛЬ: СООБЩЕНИЕ
+# ============================================
+
+class Message(models.Model):
+    """Модель сообщения в диалоге"""
+    
+    ROLE_CHOICES = [
+        ('user', 'Пользователь'),
+        ('bot', 'Бот'),
+        ('system', 'Система'),
     ]
     
-    # Связь может быть с ботом ИЛИ напрямую с пользователем
-    bot = models.ForeignKey(BotAgent, on_delete=models.CASCADE, related_name='knowledge_base', null=True, blank=True)
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='knowledge_base', null=True, blank=True)
+    conversation = models.ForeignKey(
+        Conversation,
+        on_delete=models.CASCADE,
+        related_name='messages',
+        verbose_name='Диалог'
+    )
     
-    title = models.CharField(max_length=300, verbose_name='Название документа')
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, verbose_name='Роль')
+    content = models.TextField(verbose_name='Содержимое')
+    
+    created_at = models.DateTimeField(
+        default=timezone.now,
+        verbose_name='Создано',
+        db_index=True
+    )
+    
+    class Meta:
+        db_table = 'messages'
+        verbose_name = 'Сообщение'
+        verbose_name_plural = 'Сообщения'
+        ordering = ['created_at']
+        indexes = [
+            models.Index(fields=['conversation', 'created_at']),
+            models.Index(fields=['role', 'created_at']),
+        ]
+    
+    def __str__(self):
+        return f"{self.get_role_display()}: {self.content[:50]}"
+
+
+# ============================================
+# МОДЕЛЬ: БАЗА ЗНАНИЙ
+# ============================================
+
+class KnowledgeBase(models.Model):
+    """Модель документа в базе знаний"""
+    
+    FILE_TYPE_CHOICES = [
+        ('pdf', 'PDF'),
+        ('docx', 'Word'),
+        ('txt', 'Text'),
+        ('md', 'Markdown'),
+    ]
+    
+    bot = models.ForeignKey(
+        BotAgent,
+        on_delete=models.CASCADE,
+        related_name='knowledge_base',
+        verbose_name='Бот'
+    )
+    
+    title = models.CharField(max_length=300, verbose_name='Название')
     description = models.TextField(blank=True, verbose_name='Описание')
-    file = models.FileField(upload_to=knowledge_base_upload_path, verbose_name='Файл')
+    
+    file = models.FileField(
+        upload_to=knowledge_base_upload_path,
+        verbose_name='Файл'
+    )
+    
     file_type = models.CharField(max_length=10, choices=FILE_TYPE_CHOICES, verbose_name='Тип файла')
-    file_size = models.BigIntegerField(default=0, verbose_name='Размер файла (байт)')
-    content_extracted = models.TextField(blank=True, verbose_name='Извлеченный текст')
+    file_size = models.IntegerField(default=0, verbose_name='Размер файла (байт)')
+    
+    is_indexed = models.BooleanField(
+        default=False,
+        verbose_name='Проиндексирован',
+        help_text='Документ разбит на фрагменты и векторизован'
+    )
+    
+    chunks_count = models.IntegerField(default=0, verbose_name='Количество фрагментов')
+    indexed_at = models.DateTimeField(null=True, blank=True, verbose_name='Дата индексации')
     
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Загружен')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='Обновлен')
     
     class Meta:
+        db_table = 'knowledge_base'
         verbose_name = 'Документ базы знаний'
         verbose_name_plural = 'База знаний'
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['bot', 'is_indexed']),
+        ]
     
     def __str__(self):
         return self.title
-    
+        
     @property
     def file_size_display(self):
         """Возвращает размер файла в человекочитаемом формате"""
@@ -121,103 +274,88 @@ class KnowledgeBase(models.Model):
                 return f"{size:.1f} {unit}"
             size /= 1024
         return f"{size:.1f} ТБ"
-    
-    @property
-    def file_icon(self):
-        """Возвращает иконку FontAwesome для типа файла"""
-        icons = {
-            'pdf': 'fa-file-pdf',
-            'doc': 'fa-file-word',
-            'docx': 'fa-file-word',
-            'txt': 'fa-file-lines',
-            'csv': 'fa-file-csv',
-            'xlsx': 'fa-file-excel',
-            'xls': 'fa-file-excel',
-            'json': 'fa-file-code',
-            'md': 'fa-file-lines',
-        }
-        return icons.get(self.file_type, 'fa-file')
-    
-    @property
-    def file_color(self):
-        """Возвращает цвет для типа файла"""
-        colors = {
-            'pdf': '#ef4444',
-            'doc': '#3b82f6',
-            'docx': '#3b82f6',
-            'txt': '#6b7280',
-            'csv': '#22c55e',
-            'xlsx': '#22c55e',
-            'xls': '#22c55e',
-            'json': '#f59e0b',
-            'md': '#8b5cf6',
-        }
-        return colors.get(self.file_type, '#6b7280')
 
 
-class Conversation(models.Model):
-    """Диалог с пользователем"""
-    bot = models.ForeignKey(BotAgent, on_delete=models.CASCADE, related_name='conversations')
-    user_id = models.CharField(max_length=200, verbose_name='ID пользователя')
-    user_name = models.CharField(max_length=200, blank=True, verbose_name='Имя пользователя')
+# ============================================
+# МОДЕЛЬ: ФРАГМЕНТ ДОКУМЕНТА (CHUNK)
+# ============================================
+
+class KnowledgeChunk(models.Model):
+    """Модель фрагмента документа с векторным представлением"""
     
-    started_at = models.DateTimeField(auto_now_add=True, verbose_name='Начат')
-    last_message_at = models.DateTimeField(auto_now=True, verbose_name='Последнее сообщение')
+    knowledge_base = models.ForeignKey(
+        KnowledgeBase,
+        on_delete=models.CASCADE,
+        related_name='chunks',
+        verbose_name='Документ'
+    )
     
-    is_lead = models.BooleanField(default=False, verbose_name='Является лидом')
-    lead_email = models.EmailField(blank=True, verbose_name='Email лида')
-    lead_phone = models.CharField(max_length=50, blank=True, verbose_name='Телефон лида')
+    text = models.TextField(verbose_name='Текст фрагмента')
+    
+    # Векторное представление (embedding)
+    # Размерность 1536 для модели text-embedding-3-small
+    embedding = VectorField(dimensions=1536, verbose_name='Вектор')
+    
+    chunk_index = models.IntegerField(
+        verbose_name='Порядковый номер',
+        help_text='Порядковый номер фрагмента в документе'
+    )
+    
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Создан')
     
     class Meta:
-        verbose_name = 'Диалог'
-        verbose_name_plural = 'Диалоги'
-        ordering = ['-last_message_at']
+        db_table = 'knowledge_chunks'
+        verbose_name = 'Фрагмент документа'
+        verbose_name_plural = 'Фрагменты документов'
+        ordering = ['knowledge_base', 'chunk_index']
+        indexes = [
+            models.Index(fields=['knowledge_base', 'chunk_index']),
+        ]
     
     def __str__(self):
-        return f"Диалог с {self.user_name or self.user_id}"
+        return f"Фрагмент {self.chunk_index} из {self.knowledge_base.title}"
 
 
-class Message(models.Model):
-    """Сообщение в диалоге"""
-    ROLE_CHOICES = [
-        ('user', 'Пользователь'),
-        ('bot', 'Бот'),
-        ('system', 'Система'),
-    ]
-    
-    conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='messages')
-    role = models.CharField(max_length=10, choices=ROLE_CHOICES, verbose_name='Роль')
-    content = models.TextField(verbose_name='Содержание')
-    
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Отправлено')
-    
-    class Meta:
-        verbose_name = 'Сообщение'
-        verbose_name_plural = 'Сообщения'
-        ordering = ['created_at']
-    
-    def __str__(self):
-        return f"{self.role}: {self.content[:50]}"
-
+# ============================================
+# МОДЕЛЬ: АНАЛИТИКА
+# ============================================
 
 class Analytics(models.Model):
-    """Аналитика по дням"""
-    bot = models.ForeignKey(BotAgent, on_delete=models.CASCADE, related_name='analytics')
-    date = models.DateField(verbose_name='Дата')
+    """Модель для хранения аналитических данных"""
     
-    new_conversations = models.IntegerField(default=0, verbose_name='Новых диалогов')
-    messages_sent = models.IntegerField(default=0, verbose_name='Отправлено сообщений')
-    leads_captured = models.IntegerField(default=0, verbose_name='Захвачено лидов')
+    bot = models.ForeignKey(
+        BotAgent,
+        on_delete=models.CASCADE,
+        related_name='analytics',
+        verbose_name='Бот'
+    )
+    
+    date = models.DateField(verbose_name='Дата', db_index=True)
+    
+    conversations_count = models.IntegerField(default=0, verbose_name='Количество диалогов')
+    leads_count = models.IntegerField(default=0, verbose_name='Количество лидов')
+    messages_count = models.IntegerField(default=0, verbose_name='Количество сообщений')
+    
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Создано')
     
     class Meta:
+        db_table = 'analytics'
         verbose_name = 'Аналитика'
         verbose_name_plural = 'Аналитика'
         ordering = ['-date']
-        unique_together = ['bot', 'date']
+        unique_together = [['bot', 'date']]
+        indexes = [
+            models.Index(fields=['bot', 'date']),
+        ]
     
     def __str__(self):
-        return f"{self.bot.name} - {self.date}"
-    
+        return f"Аналитика {self.bot.name} - {self.date}"
+
+
+# ============================================
+# МОДЕЛИ CRM ИНТЕГРАЦИЙ (ВОССТАНОВЛЕНО)
+# ============================================
+
 class CRMIntegration(models.Model):
     """Базовая модель CRM интеграции"""
     CRM_CHOICES = [
@@ -268,6 +406,7 @@ class CRMIntegration(models.Model):
     updated_at = models.DateTimeField(auto_now=True, verbose_name='Обновлено')
     
     class Meta:
+        db_table = 'crm_integrations'
         verbose_name = 'CRM Интеграция'
         verbose_name_plural = 'CRM Интеграции'
         unique_together = ['user', 'crm_type']
@@ -278,12 +417,6 @@ class CRMIntegration(models.Model):
     @property
     def is_connected(self):
         return self.status == 'connected'
-    
-    @property
-    def is_token_expired(self):
-        if not self.token_expires_at:
-            return True
-        return timezone.now() >= self.token_expires_at
 
 
 class CRMSyncLog(models.Model):
@@ -315,6 +448,7 @@ class CRMSyncLog(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Создано')
     
     class Meta:
+        db_table = 'crm_sync_logs'
         verbose_name = 'Лог синхронизации'
         verbose_name_plural = 'Логи синхронизации'
         ordering = ['-created_at']

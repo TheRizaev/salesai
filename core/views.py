@@ -1,201 +1,317 @@
-from django.shortcuts import render, redirect, get_object_or_404
-from django.contrib.auth.decorators import login_required
-from django.contrib.auth import login, logout
-from django.contrib import messages
-from django.db.models import Sum, Count
-from django.utils import timezone
-from datetime import timedelta
-from .models import BotAgent, KnowledgeBase, Conversation, Message, Analytics
-from django.http import JsonResponse
-from django.views.decorators.http import require_http_methods
-from django.core.paginator import Paginator
-import json
+# core/views.py
+"""
+Views для проекта SalesAI
+Включает: Дашборд, Боты, Диалоги, Аналитику, Базу знаний (RAG)
+Объединенная версия: функционал RAG/Аналитики + логика подключения Telegram
+"""
+
 import os
-import datetime
+import json
+import logging
+from datetime import datetime, timedelta
 
-# Допустимые расширения файлов
-ALLOWED_EXTENSIONS = {
-    'pdf', 'doc', 'docx', 'txt', 'csv', 'xlsx', 'xls', 'json', 'md', 'rtf'
-}
+from django.shortcuts import render, redirect, get_object_or_404
+from django.contrib.auth import login, logout, authenticate
+from django.contrib.auth.decorators import login_required
+from django.contrib.auth.models import User
+from django.contrib import messages
+from django.http import JsonResponse, HttpResponse
+from django.views.decorators.http import require_http_methods
+from django.views.decorators.csrf import csrf_exempt
+from django.db.models import Count, Q, Avg, Sum
+from django.db.models.functions import TruncDate, ExtractWeekDay, ExtractHour
+from django.utils import timezone
+from django.core.paginator import Paginator
 
-# Максимальный размер файла (50MB)
-MAX_FILE_SIZE = 50 * 1024 * 1024
+# Импорты моделей и сервисов
+from .models import BotAgent, Conversation, Message, KnowledgeBase, KnowledgeChunk, Analytics
+from services.rag_service import rag_service
 
+from asgiref.sync import async_to_sync
+from .telegram_auth import send_code_request, verify_code
+
+logger = logging.getLogger(__name__)
+
+# ============================================
+# HELPER FUNCTIONS
+# ============================================
+
+ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.txt'}
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 
 def get_file_type(filename):
     """Определяет тип файла по расширению"""
-    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    ext = os.path.splitext(filename)[1].lower()
     if ext in ALLOWED_EXTENSIONS:
-        return ext
+        return ext.replace('.', '')
     return 'other'
 
-
-def run_async(coro):
-    """Helper для запуска async функций в sync контексте"""
-    import asyncio
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    return loop.run_until_complete(coro)
-
-
-# ===== PUBLIC VIEWS =====
+# ============================================
+# PUBLIC PAGES
+# ============================================
 
 def home(request):
     """Главная страница"""
+    if request.user.is_authenticated:
+        return redirect('dashboard')
     return render(request, 'index.html')
 
 def pricing(request):
-    """Страница с тарифами"""
+    """Страница тарифов"""
     return render(request, 'pricing.html')
 
 def templates_view(request):
-    """Страница с шаблонами"""
+    """Страница шаблонов"""
     return render(request, 'templates.html')
 
 def docs(request):
-    """Документация"""
+    """Страница документации"""
     return render(request, 'docs.html')
 
+# ============================================
+# АУТЕНТИФИКАЦИЯ
+# ============================================
 
-# ===== DASHBOARD VIEWS =====
+def login_view(request):
+    """Вход СТРОГО по Email"""
+    if request.user.is_authenticated:
+        return redirect('dashboard')
+    
+    if request.method == 'POST':
+        # ДЕБАГ: выводим всё что пришло
+        print("=" * 50)
+        print(f"POST data: {dict(request.POST)}")
+        
+        email = request.POST.get('login') or request.POST.get('email')
+        password = request.POST.get('password')
+        
+        print(f"Extracted email: '{email}'")
+        print(f"Password exists: {bool(password)}")
+        print(f"Password length: {len(password) if password else 0}")
+        
+        try:
+            user_obj = User.objects.get(email__iexact=email)
+            print(f"User found: {user_obj.username} (ID: {user_obj.id})")
+            print(f"User is_active: {user_obj.is_active}")
+            
+            # Проверяем пароль напрямую
+            password_valid = user_obj.check_password(password)
+            print(f"check_password result: {password_valid}")
+            
+            # Пробуем authenticate
+            user = authenticate(username=user_obj.username, password=password)
+            print(f"authenticate result: {user}")
+            
+            if user is not None:
+                login(request, user)
+                print("Login successful, redirecting...")
+                return redirect('dashboard')
+            else:
+                print("ERROR: authenticate returned None!")
+                messages.error(request, 'Неверный пароль')
+                
+        except User.DoesNotExist:
+            print(f"ERROR: User with email '{email}' not found")
+            messages.error(request, 'Пользователь с таким email не найден')
+        
+        print("=" * 50)
+            
+    return render(request, 'account/login.html')
+
+@login_required
+def logout_view(request):
+    """Выход из системы"""
+    logout(request)
+    messages.success(request, 'Вы успешно вышли из системы')
+    return redirect('login')
+
+def register_view(request):
+    """Регистрация нового пользователя"""
+    if request.user.is_authenticated:
+        return redirect('dashboard')
+    
+    if request.method == 'POST':
+        username = request.POST.get('username')
+        email = request.POST.get('email')
+        password = request.POST.get('password')
+        password_confirm = request.POST.get('password_confirm')
+        
+        # Валидация
+        if password != password_confirm:
+            messages.error(request, 'Пароли не совпадают')
+            return render(request, 'account/signup.html')
+        
+        if User.objects.filter(username=username).exists():
+            messages.error(request, 'Пользователь с таким именем уже существует')
+            return render(request, 'account/signup.html')
+        
+        # Создаем пользователя
+        user = User.objects.create_user(username=username, email=email, password=password)
+        login(request, user)
+        messages.success(request, 'Регистрация успешна!')
+        return redirect('dashboard')
+    
+    # Исправлено: путь к шаблону
+    return render(request, 'account/signup.html')
+
+@login_required
+def profile_view(request):
+    """Профиль пользователя"""
+    if request.method == 'POST':
+        user = request.user
+        user.first_name = request.POST.get('first_name', '')
+        user.last_name = request.POST.get('last_name', '')
+        user.email = request.POST.get('email', '')
+        user.save()
+        messages.success(request, 'Профиль обновлен')
+        return redirect('profile')
+    
+    # Здесь можно использовать dashboard/settings.html или отдельный шаблон
+    return render(request, 'dashboard/settings.html') 
+
+# ============================================
+# DASHBOARD
+# ============================================
 
 @login_required
 def dashboard(request):
-    """Главная панель управления"""
+    """Главная страница дашборда"""
     user_bots = BotAgent.objects.filter(user=request.user)
     
-    # Статистика за последние 7 дней
-    week_ago = timezone.now().date() - timedelta(days=7)
-    analytics = Analytics.objects.filter(
-        bot__user=request.user,
-        date__gte=week_ago
-    ).aggregate(
-        total_conversations=Sum('new_conversations'),
-        total_messages=Sum('messages_sent'),
-        total_leads=Sum('leads_captured')
-    )
+    # Статистика
+    total_bots = user_bots.count()
+    total_conversations = Conversation.objects.filter(bot__user=request.user).count()
+    total_leads = Conversation.objects.filter(bot__user=request.user, is_lead=True).count()
     
     # Последние диалоги
     recent_conversations = Conversation.objects.filter(
         bot__user=request.user
-    ).order_by('-last_message_at')[:5]
-    
-    # Количество документов в базе знаний
-    knowledge_count = KnowledgeBase.objects.filter(user=request.user).count()
+    ).select_related('bot').order_by('-last_message_at')[:10]
     
     context = {
+        'total_bots': total_bots,
+        'total_conversations': total_conversations,
+        'total_leads': total_leads,
         'bots': user_bots,
-        'total_bots': user_bots.count(),
-        'active_bots': user_bots.filter(status='active').count(),
-        'total_conversations': analytics['total_conversations'] or 0,
-        'total_messages': analytics['total_messages'] or 0,
-        'total_leads': analytics['total_leads'] or 0,
         'recent_conversations': recent_conversations,
-        'knowledge_count': knowledge_count,
+        # Добавил для sidebar active state
+        'active_bots': total_bots 
     }
     
     return render(request, 'dashboard/index.html', context)
 
+# ============================================
+# УПРАВЛЕНИЕ БОТАМИ
+# ============================================
 
 @login_required
-def agents_list(request):
+def bots_list(request):
     """Список ботов пользователя"""
-    bots = BotAgent.objects.filter(user=request.user)
+    bots = BotAgent.objects.filter(user=request.user).order_by('-created_at')
     
-    context = {
-        'bots': bots,
-    }
+    # Добавляем статистику к каждому боту
+    for bot in bots:
+        bot.conversations_count = Conversation.objects.filter(bot=bot).count()
+        bot.leads_count = Conversation.objects.filter(bot=bot, is_lead=True).count()
     
-    return render(request, 'dashboard/agents.html', context)
-
-
-@login_required
-def agent_detail(request, agent_id):
-    """Детальная информация о боте"""
-    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
-    
-    # Статистика за последние 30 дней
-    thirty_days_ago = timezone.now().date() - timedelta(days=30)
-    daily_stats = Analytics.objects.filter(
-        bot=bot,
-        date__gte=thirty_days_ago
-    ).order_by('date')
-    
-    # База знаний бота
-    knowledge_base = KnowledgeBase.objects.filter(bot=bot)
-    
-    # Последние диалоги
-    recent_conversations = Conversation.objects.filter(bot=bot).order_by('-last_message_at')[:10]
-    
-    context = {
-        'bot': bot,
-        'daily_stats': daily_stats,
-        'knowledge_base': knowledge_base,
-        'recent_conversations': recent_conversations,
-    }
-    
-    return render(request, 'dashboard/agent_detail.html', context)
-
+    # Исправлено: путь к шаблону (у вас файл называется agents.html)
+    return render(request, 'dashboard/agents.html', {'bots': bots})
 
 @login_required
-def create_agent(request):
+def bot_detail(request, bot_id):
+    """Детали бота"""
+    bot = get_object_or_404(BotAgent, id=bot_id, user=request.user)
+    
+    # Статистика
+    conversations = Conversation.objects.filter(bot=bot)
+    bot.conversations_count = conversations.count()
+    bot.leads_count = conversations.filter(is_lead=True).count()
+    bot.knowledge_count = KnowledgeBase.objects.filter(bot=bot).count()
+    
+    # Исправлено: путь к шаблону (agent_detail.html)
+    return render(request, 'dashboard/agent_detail.html', {'bot': bot})
+
+@login_required
+def bot_create(request):
     """Создание нового бота"""
     if request.method == 'POST':
-        name = request.POST.get('name')
-        platform = request.POST.get('platform')
-        description = request.POST.get('description', '')
-        
         bot = BotAgent.objects.create(
             user=request.user,
-            name=name,
-            platform=platform,
-            description=description,
-            status='inactive'
+            name=request.POST.get('name'),
+            description=request.POST.get('description', ''),
+            platform=request.POST.get('platform'),
+            system_prompt=request.POST.get('system_prompt', 'Ты - полезный AI ассистент.'),
+            telegram_token=request.POST.get('telegram_token', ''),
+            whatsapp_token=request.POST.get('whatsapp_token', ''),
         )
-        
-        messages.success(request, f'Бот "{name}" успешно создан!')
-        return redirect('agent_detail', agent_id=bot.id)
+        messages.success(request, f'Бот "{bot.name}" успешно создан')
+        # Исправлено: редирект на agent_detail (имя в urls.py)
+        return redirect('agent_detail', bot_id=bot.id)
     
     return render(request, 'dashboard/create_agent.html')
 
+@login_required
+def bot_edit(request, bot_id):
+    """Редактирование бота (используем тот же шаблон деталей, но с логикой)"""
+    # Обычно редактирование происходит в модалке или на странице деталей,
+    # здесь просто редирект на детали, так как отдельного шаблона bot_edit.html в списке нет
+    return redirect('agent_detail', bot_id=bot_id)
+
+@login_required
+@require_http_methods(['POST'])
+def bot_delete(request, bot_id):
+    """Удаление бота (форма)"""
+    bot = get_object_or_404(BotAgent, id=bot_id, user=request.user)
+    bot_name = bot.name
+    bot.delete()
+    
+    messages.success(request, f'Бот "{bot_name}" удален')
+    # Исправлено: редирект на agents_list
+    return redirect('agents_list')
+
+# ============================================
+# ДИАЛОГИ И СООБЩЕНИЯ
+# ============================================
 
 @login_required
 def conversations_list(request):
-    """Список всех диалогов"""
+    """Список диалогов"""
+    conversations = Conversation.objects.filter(
+        bot__user=request.user
+    ).select_related('bot').order_by('-last_message_at')
+    
+    # Фильтрация
     bot_id = request.GET.get('bot')
-    
-    conversations = Conversation.objects.filter(bot__user=request.user)
-    
     if bot_id:
         conversations = conversations.filter(bot_id=bot_id)
     
-    conversations = conversations.order_by('-last_message_at')
+    is_lead = request.GET.get('is_lead')
+    if is_lead == '1':
+        conversations = conversations.filter(is_lead=True)
     
-    user_bots = BotAgent.objects.filter(user=request.user)
+    # Пагинация
+    paginator = Paginator(conversations, 20)
+    page_number = request.GET.get('page')
+    page_obj = paginator.get_page(page_number)
     
     context = {
-        'conversations': conversations,
-        'bots': user_bots,
-        'selected_bot': bot_id,
+        'page_obj': page_obj,
+        'bots': BotAgent.objects.filter(user=request.user),
     }
     
+    # Исправлено: шаблон conversations.html
     return render(request, 'dashboard/conversations.html', context)
-
 
 @login_required
 def conversation_detail(request, conversation_id):
-    """Просмотр конкретного диалога"""
+    """Детали диалога"""
     conversation = get_object_or_404(
         Conversation,
         id=conversation_id,
         bot__user=request.user
     )
     
-    messages_list = Message.objects.filter(conversation=conversation).order_by('created_at')
+    messages_list = conversation.messages.all().order_by('created_at')
     
     context = {
         'conversation': conversation,
@@ -204,467 +320,388 @@ def conversation_detail(request, conversation_id):
     
     return render(request, 'dashboard/conversation_detail.html', context)
 
-
-# ===== KNOWLEDGE BASE VIEWS =====
-
-@login_required
-def knowledge_base_view(request):
-    """Управление базой знаний пользователя"""
-    # Получаем параметры фильтрации
-    bot_id = request.GET.get('bot')
-    file_type = request.GET.get('type')
-    search = request.GET.get('search', '').strip()
-    
-    # Базовый запрос - документы пользователя
-    documents = KnowledgeBase.objects.filter(user=request.user)
-    
-    # Фильтрация по боту
-    if bot_id:
-        documents = documents.filter(bot_id=bot_id)
-    
-    # Фильтрация по типу файла
-    if file_type:
-        documents = documents.filter(file_type=file_type)
-    
-    # Поиск по названию
-    if search:
-        documents = documents.filter(title__icontains=search)
-    
-    # Пагинация
-    paginator = Paginator(documents, 12)  # 12 документов на страницу
-    page_number = request.GET.get('page')
-    page_obj = paginator.get_page(page_number)
-    
-    # Боты пользователя для фильтра
-    user_bots = BotAgent.objects.filter(user=request.user)
-    
-    # Статистика
-    total_documents = KnowledgeBase.objects.filter(user=request.user).count()
-    total_size = KnowledgeBase.objects.filter(user=request.user).aggregate(
-        total=Sum('file_size')
-    )['total'] or 0
-    
-    # Форматирование размера
-    def format_size(size):
-        for unit in ['Б', 'КБ', 'МБ', 'ГБ']:
-            if size < 1024:
-                return f"{size:.1f} {unit}"
-            size /= 1024
-        return f"{size:.1f} ТБ"
-    
-    # Типы файлов для фильтра
-    file_types = KnowledgeBase.objects.filter(user=request.user).values_list(
-        'file_type', flat=True
-    ).distinct()
-    
-    context = {
-        'documents': page_obj,
-        'bots': user_bots,
-        'selected_bot': bot_id,
-        'selected_type': file_type,
-        'search_query': search,
-        'total_documents': total_documents,
-        'total_size': format_size(total_size),
-        'file_types': list(file_types),
-        'allowed_extensions': ', '.join(ALLOWED_EXTENSIONS),
-    }
-    
-    return render(request, 'dashboard/knowledge_base.html', context)
-
-
-@login_required
-@require_http_methods(["POST"])
-def upload_knowledge_file(request):
-    """Загрузка файла в базу знаний"""
-    if 'file' not in request.FILES:
-        return JsonResponse({
-            'success': False, 
-            'error': 'Файл не выбран'
-        }, status=400)
-    
-    file = request.FILES['file']
-    bot_id = request.POST.get('bot_id')
-    description = request.POST.get('description', '')
-    
-    # Проверка размера файла
-    if file.size > MAX_FILE_SIZE:
-        return JsonResponse({
-            'success': False,
-            'error': f'Файл слишком большой. Максимум: {MAX_FILE_SIZE // (1024*1024)} МБ'
-        }, status=400)
-    
-    # Проверка расширения
-    file_extension = file.name.rsplit('.', 1)[-1].lower() if '.' in file.name else ''
-    if file_extension not in ALLOWED_EXTENSIONS:
-        return JsonResponse({
-            'success': False,
-            'error': f'Недопустимый тип файла. Разрешены: {", ".join(ALLOWED_EXTENSIONS)}'
-        }, status=400)
-    
-    # Определяем тип файла
-    file_type = get_file_type(file.name)
-    
-    # Получаем бота, если указан
-    bot = None
-    if bot_id:
-        try:
-            bot = BotAgent.objects.get(id=bot_id, user=request.user)
-        except BotAgent.DoesNotExist:
-            pass
-    
-    # Создаем запись
-    knowledge = KnowledgeBase.objects.create(
-        user=request.user,
-        bot=bot,
-        title=file.name,
-        description=description,
-        file=file,
-        file_type=file_type,
-        file_size=file.size
-    )
-    
-    return JsonResponse({
-        'success': True,
-        'message': f'Файл "{file.name}" успешно загружен',
-        'document': {
-            'id': knowledge.id,
-            'title': knowledge.title,
-            'file_type': knowledge.file_type,
-            'file_size': knowledge.file_size_display,
-            'file_icon': knowledge.file_icon,
-            'file_color': knowledge.file_color,
-            'created_at': knowledge.created_at.strftime('%d.%m.%Y %H:%M'),
-        }
-    })
-
-
-@login_required
-@require_http_methods(["POST"])
-def upload_multiple_files(request):
-    """Загрузка нескольких файлов"""
-    files = request.FILES.getlist('files')
-    bot_id = request.POST.get('bot_id')
-    
-    if not files:
-        return JsonResponse({
-            'success': False,
-            'error': 'Файлы не выбраны'
-        }, status=400)
-    
-    # Получаем бота, если указан
-    bot = None
-    if bot_id:
-        try:
-            bot = BotAgent.objects.get(id=bot_id, user=request.user)
-        except BotAgent.DoesNotExist:
-            pass
-    
-    uploaded = []
-    errors = []
-    
-    for file in files:
-        # Проверка размера
-        if file.size > MAX_FILE_SIZE:
-            errors.append(f'{file.name}: файл слишком большой')
-            continue
-        
-        # Проверка расширения
-        file_extension = file.name.rsplit('.', 1)[-1].lower() if '.' in file.name else ''
-        if file_extension not in ALLOWED_EXTENSIONS:
-            errors.append(f'{file.name}: недопустимый тип файла')
-            continue
-        
-        # Создаем запись
-        file_type = get_file_type(file.name)
-        knowledge = KnowledgeBase.objects.create(
-            user=request.user,
-            bot=bot,
-            title=file.name,
-            file=file,
-            file_type=file_type,
-            file_size=file.size
-        )
-        
-        uploaded.append({
-            'id': knowledge.id,
-            'title': knowledge.title,
-            'file_size': knowledge.file_size_display,
-        })
-    
-    return JsonResponse({
-        'success': True,
-        'uploaded': uploaded,
-        'uploaded_count': len(uploaded),
-        'errors': errors,
-        'error_count': len(errors),
-    })
-
-
-@login_required
-@require_http_methods(["GET"])
-def get_knowledge_document(request, document_id):
-    """Получение информации о документе"""
-    document = get_object_or_404(KnowledgeBase, id=document_id, user=request.user)
-    
-    return JsonResponse({
-        'success': True,
-        'document': {
-            'id': document.id,
-            'title': document.title,
-            'description': document.description,
-            'file_type': document.file_type,
-            'file_size': document.file_size_display,
-            'file_url': document.file.url,
-            'file_icon': document.file_icon,
-            'file_color': document.file_color,
-            'bot_id': document.bot_id,
-            'bot_name': document.bot.name if document.bot else None,
-            'created_at': document.created_at.strftime('%d.%m.%Y %H:%M'),
-            'updated_at': document.updated_at.strftime('%d.%m.%Y %H:%M'),
-        }
-    })
-
-
-@login_required
-@require_http_methods(["POST"])
-def update_knowledge_document(request, document_id):
-    """Обновление информации о документе"""
-    document = get_object_or_404(KnowledgeBase, id=document_id, user=request.user)
-    
-    try:
-        data = json.loads(request.body)
-    except json.JSONDecodeError:
-        return JsonResponse({'success': False, 'error': 'Неверный формат данных'}, status=400)
-    
-    # Обновляем поля
-    if 'title' in data:
-        document.title = data['title']
-    if 'description' in data:
-        document.description = data['description']
-    if 'bot_id' in data:
-        if data['bot_id']:
-            try:
-                bot = BotAgent.objects.get(id=data['bot_id'], user=request.user)
-                document.bot = bot
-            except BotAgent.DoesNotExist:
-                pass
-        else:
-            document.bot = None
-    
-    document.save()
-    
-    return JsonResponse({
-        'success': True,
-        'message': 'Документ обновлен'
-    })
-
-
-@login_required
-@require_http_methods(["DELETE"])
-def delete_knowledge_document(request, document_id):
-    """Удаление документа"""
-    document = get_object_or_404(KnowledgeBase, id=document_id, user=request.user)
-    
-    # Удаляем файл с диска
-    if document.file:
-        try:
-            if os.path.isfile(document.file.path):
-                os.remove(document.file.path)
-        except Exception:
-            pass  # Игнорируем ошибки удаления файла
-    
-    document_title = document.title
-    document.delete()
-    
-    return JsonResponse({
-        'success': True,
-        'message': f'Документ "{document_title}" удален'
-    })
-
-
-@login_required
-@require_http_methods(["POST"])
-def delete_multiple_documents(request):
-    """Удаление нескольких документов"""
-    try:
-        data = json.loads(request.body)
-        document_ids = data.get('ids', [])
-    except json.JSONDecodeError:
-        return JsonResponse({'success': False, 'error': 'Неверный формат данных'}, status=400)
-    
-    if not document_ids:
-        return JsonResponse({'success': False, 'error': 'Не выбраны документы'}, status=400)
-    
-    documents = KnowledgeBase.objects.filter(id__in=document_ids, user=request.user)
-    deleted_count = 0
-    
-    for doc in documents:
-        # Удаляем файл с диска
-        if doc.file:
-            try:
-                if os.path.isfile(doc.file.path):
-                    os.remove(doc.file.path)
-            except Exception:
-                pass
-        doc.delete()
-        deleted_count += 1
-    
-    return JsonResponse({
-        'success': True,
-        'message': f'Удалено документов: {deleted_count}'
-    })
-
-
-# ===== ANALYTICS VIEW =====
+# ============================================
+# АНАЛИТИКА
+# ============================================
 
 @login_required
 def analytics_view(request):
-    bot_id = request.GET.get('bot')
-    
+    """Главная страница аналитики"""
     user_bots = BotAgent.objects.filter(user=request.user)
-    
-    if bot_id:
-        selected_bot = get_object_or_404(BotAgent, id=bot_id, user=request.user)
-        bots_queryset = [selected_bot]
-    else:
-        selected_bot = None
-        bots_queryset = user_bots
-    
-    # Статистика за последние 30 дней
-    thirty_days_ago = timezone.now().date() - timedelta(days=30)
-    
-    analytics_data = Analytics.objects.filter(
-        bot__in=bots_queryset,
-        date__gte=thirty_days_ago
-    ).values('date').annotate(
-        conversations=Sum('new_conversations'),
-        messages=Sum('messages_sent'),
-        leads=Sum('leads_captured')
-    ).order_by('date')
-    
-    # Общая статистика
-    total_stats = Analytics.objects.filter(
-        bot__in=bots_queryset
-    ).aggregate(
-        total_conversations=Sum('new_conversations'),
-        total_messages=Sum('messages_sent'),
-        total_leads=Sum('leads_captured')
-    )
-    
-    context = {
-        'bots': user_bots,
-        'selected_bot': selected_bot,
-        'analytics_data': list(analytics_data),
-        'total_stats': total_stats,
-    }
-    
+    context = {'bots': user_bots}
     return render(request, 'dashboard/analytics.html', context)
 
-
 @login_required
-def settings_view(request):
-    """Настройки аккаунта"""
-    if request.method == 'POST':
-        user = request.user
-        user.first_name = request.POST.get('first_name', '')
-        user.last_name = request.POST.get('last_name', '')
-        user.save()
-        
-        messages.success(request, 'Настройки сохранены!')
-        return redirect('settings')
+@require_http_methods(['GET'])
+def get_analytics_summary(request):
+    """API: Сводная статистика"""
+    agent_id = request.GET.get('agent_id', 'all')
+    channel = request.GET.get('channel', 'all')
+    period = request.GET.get('period', '7days')
     
-    context = {
-        'user': request.user,
-    }
+    now = timezone.now()
+    end_date = now.date()
     
-    return render(request, 'dashboard/settings.html', context)
-
-
-# ===== API ENDPOINTS =====
-
-@login_required
-@require_http_methods(["POST"])
-def toggle_bot_status(request, agent_id):
-    """Включение/выключение бота"""
-    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
-    
-    if bot.status == 'active':
-        bot.status = 'inactive'
+    if period == 'today':
+        start_date = end_date
+    elif period == 'yesterday':
+        start_date = end_date - timedelta(days=1)
+        end_date = start_date
+    elif period == '7days':
+        start_date = end_date - timedelta(days=7)
+    elif period == '30days':
+        start_date = end_date - timedelta(days=30)
+    elif period == '90days':
+        start_date = end_date - timedelta(days=90)
     else:
-        bot.status = 'active'
+        start_date = end_date - timedelta(days=7)
     
-    bot.save()
+    bots_query = BotAgent.objects.filter(user=request.user)
+    if agent_id != 'all':
+        bots_query = bots_query.filter(id=agent_id)
+    if channel != 'all':
+        bots_query = bots_query.filter(platform=channel)
     
-    return JsonResponse({
-        'success': True,
-        'status': bot.status,
-        'message': f'Бот {"активирован" if bot.status == "active" else "остановлен"}'
-    })
-
-
-@login_required
-@require_http_methods(["DELETE"])
-def delete_bot(request, agent_id):
-    """Удаление бота"""
-    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
-    bot_name = bot.name
-    bot.delete()
-    
-    return JsonResponse({
-        'success': True,
-        'message': f'Бот "{bot_name}" удален'
-    })
-
-
-@login_required
-@require_http_methods(["POST"])
-def upload_knowledge(request, agent_id):
-    """Загрузка документа в базу знаний бота"""
-    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
-    
-    if 'file' not in request.FILES:
-        return JsonResponse({'success': False, 'message': 'Файл не загружен'}, status=400)
-    
-    file = request.FILES['file']
-    
-    # Проверка размера
-    if file.size > MAX_FILE_SIZE:
-        return JsonResponse({
-            'success': False,
-            'message': f'Файл слишком большой. Максимум: {MAX_FILE_SIZE // (1024*1024)} МБ'
-        }, status=400)
-    
-    # Определяем тип файла
-    file_type = get_file_type(file.name)
-    
-    knowledge = KnowledgeBase.objects.create(
-        user=request.user,
-        bot=bot,
-        title=file.name,
-        file=file,
-        file_type=file_type,
-        file_size=file.size
+    conversations_current = Conversation.objects.filter(
+        bot__in=bots_query,
+        started_at__date__gte=start_date,
+        started_at__date__lte=end_date
     )
     
+    total_conversations = conversations_current.count()
+    total_leads = conversations_current.filter(is_lead=True).count()
+    conversion_rate = (total_leads / total_conversations * 100) if total_conversations > 0 else 0
+    
+    # Сравнение с прошлым периодом
+    period_length = (end_date - start_date).days + 1
+    prev_start_date = start_date - timedelta(days=period_length)
+    prev_end_date = start_date - timedelta(days=1)
+    
+    conversations_previous = Conversation.objects.filter(
+        bot__in=bots_query,
+        started_at__date__gte=prev_start_date,
+        started_at__date__lte=prev_end_date
+    )
+    
+    prev_conversations = conversations_previous.count()
+    prev_leads = conversations_previous.filter(is_lead=True).count()
+    
+    def calculate_change(current, previous):
+        if previous == 0:
+            return 100 if current > 0 else 0
+        return round(((current - previous) / previous) * 100, 1)
+    
     return JsonResponse({
         'success': True,
-        'message': f'Документ "{file.name}" загружен',
-        'document_id': knowledge.id
+        'data': {
+            'total_conversations': total_conversations,
+            'total_leads': total_leads,
+            'conversion_rate': round(conversion_rate, 1),
+            'avg_response_time': 1.2,
+            'changes': {
+                'conversations': calculate_change(total_conversations, prev_conversations),
+                'leads': calculate_change(total_leads, prev_leads),
+                'conversion': round(conversion_rate, 1),
+                'response_time': 0,
+            }
+        }
     })
 
+@login_required
+@require_http_methods(['GET'])
+def get_conversations_chart(request):
+    """API: График диалогов по дням"""
+    agent_id = request.GET.get('agent_id', 'all')
+    period = request.GET.get('period', '7days')
+    
+    now = timezone.now()
+    end_date = now.date()
+    
+    if period == 'today':
+        start_date = end_date
+    elif period == '7days':
+        start_date = end_date - timedelta(days=7)
+    elif period == '30days':
+        start_date = end_date - timedelta(days=30)
+    else:
+        start_date = end_date - timedelta(days=7)
+    
+    bots_query = BotAgent.objects.filter(user=request.user)
+    if agent_id != 'all':
+        bots_query = bots_query.filter(id=agent_id)
+    
+    conversations_by_date = Conversation.objects.filter(
+        bot__in=bots_query,
+        started_at__date__gte=start_date,
+        started_at__date__lte=end_date
+    ).annotate(
+        date=TruncDate('started_at')
+    ).values('date').annotate(
+        total=Count('id'),
+        leads=Count('id', filter=Q(is_lead=True))
+    ).order_by('date')
+    
+    date_range = []
+    current_date = start_date
+    while current_date <= end_date:
+        date_range.append(current_date)
+        current_date += timedelta(days=1)
+    
+    data_dict = {item['date']: item for item in conversations_by_date}
+    labels = []
+    conversations_data = []
+    leads_data = []
+    
+    for date in date_range:
+        labels.append(date.strftime('%Y-%m-%d'))
+        if date in data_dict:
+            conversations_data.append(data_dict[date]['total'])
+            leads_data.append(data_dict[date]['leads'])
+        else:
+            conversations_data.append(0)
+            leads_data.append(0)
+    
+    return JsonResponse({
+        'success': True,
+        'data': {
+            'labels': labels,
+            'datasets': [
+                {'label': 'Диалоги', 'data': conversations_data},
+                {'label': 'Лиды', 'data': leads_data}
+            ]
+        }
+    })
 
 @login_required
-def telegram_connect_view(request, agent_id):
-    """Страница подключения Telegram"""
-    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
-    return render(request, 'dashboard/telegram_connect.html', {'bot': bot})
+@require_http_methods(['GET'])
+def get_channels_chart(request):
+    """API: Распределение по каналам"""
+    agent_id = request.GET.get('agent_id', 'all')
+    bots_query = BotAgent.objects.filter(user=request.user)
+    if agent_id != 'all':
+        bots_query = bots_query.filter(id=agent_id)
+    
+    conversations_by_platform = Conversation.objects.filter(
+        bot__in=bots_query
+    ).values('bot__platform').annotate(
+        total=Count('id')
+    ).order_by('-total')
+    
+    platform_names = {'telegram': 'Telegram', 'whatsapp': 'WhatsApp', 'vk': 'VK', 'instagram': 'Instagram'}
+    labels, values, colors = [], [], []
+    
+    for item in conversations_by_platform:
+        platform = item['bot__platform']
+        labels.append(platform_names.get(platform, platform.capitalize()))
+        values.append(item['total'])
+        colors.append({'telegram': '#0088cc', 'whatsapp': '#25D366', 'vk': '#0077FF'}.get(platform, '#6366f1'))
+    
+    return JsonResponse({'success': True, 'data': {'labels': labels, 'values': values, 'colors': colors}})
 
+@login_required
+@require_http_methods(['GET'])
+def get_activity_heatmap(request):
+    """API: Тепловая карта активности"""
+    agent_id = request.GET.get('agent_id', 'all')
+    bots_query = BotAgent.objects.filter(user=request.user)
+    if agent_id != 'all':
+        bots_query = bots_query.filter(id=agent_id)
+    
+    end_date = timezone.now()
+    start_date = end_date - timedelta(days=30)
+    
+    messages_by_time = Message.objects.filter(
+        conversation__bot__in=bots_query,
+        created_at__gte=start_date,
+        created_at__lte=end_date,
+        role='user'
+    ).annotate(
+        weekday=ExtractWeekDay('created_at'),
+        hour=ExtractHour('created_at')
+    ).values('weekday', 'hour').annotate(count=Count('id'))
+    
+    data_dict = {}
+    for item in messages_by_time:
+        wd = item['weekday']
+        weekday_index = (wd - 2) % 7 
+        hour = item['hour']
+        if weekday_index not in data_dict: data_dict[weekday_index] = {}
+        data_dict[weekday_index][hour] = item['count']
+    
+    max_count = max((item['count'] for item in messages_by_time), default=1)
+    
+    def get_level(count):
+        if count == 0: return 0
+        pct = (count / max_count) * 100
+        return 1 if pct < 20 else 2 if pct < 40 else 3 if pct < 60 else 4 if pct < 80 else 5
+    
+    days = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+    heatmap_data = {}
+    for day_idx, day_name in enumerate(days):
+        heatmap_data[day_name] = {}
+        for hour in range(24):
+            count = data_dict.get(day_idx, {}).get(hour, 0)
+            heatmap_data[day_name][hour] = {'level': get_level(count), 'value': count}
+            
+    return JsonResponse({'success': True, 'data': heatmap_data})
+
+@login_required
+@require_http_methods(['GET'])
+def get_agents_performance(request):
+    """API: Производительность ботов"""
+    bots = BotAgent.objects.filter(user=request.user)
+    agents_data = []
+    
+    for bot in bots:
+        conversations = Conversation.objects.filter(bot=bot)
+        total_conversations = conversations.count()
+        total_leads = conversations.filter(is_lead=True).count()
+        conversion = round((total_leads / total_conversations * 100), 0) if total_conversations > 0 else 0
+        
+        agents_data.append({
+            'id': bot.id,
+            'name': bot.name,
+            'type': bot.get_platform_display(),
+            'conversations': total_conversations,
+            'leads': total_leads,
+            'conversion': conversion,
+            'status': bot.status
+        })
+    
+    agents_data.sort(key=lambda x: x['conversations'], reverse=True)
+    return JsonResponse({'success': True, 'data': agents_data})
+
+@login_required
+@require_http_methods(['POST'])
+def export_analytics(request):
+    """API: Экспорт (заглушка)"""
+    return JsonResponse({'success': True, 'message': 'Экспорт пока не реализован'})
+
+# ============================================
+# БАЗА ЗНАНИЙ (RAG + CRUD)
+# ============================================
+
+@login_required
+def knowledge_base_list(request, bot_id):
+    """Список документов в базе знаний бота"""
+    bot = get_object_or_404(BotAgent, id=bot_id, user=request.user)
+    documents = KnowledgeBase.objects.filter(bot=bot).order_by('-created_at')
+    for doc in documents:
+        doc.chunks_count_db = doc.chunks.count()
+    return render(request, 'dashboard/knowledge_base.html', {'bot': bot, 'documents': documents})
+
+@login_required
+def upload_knowledge_file(request, bot_id):
+    """Загрузка документа в базу знаний (с RAG индексацией)"""
+    bot = get_object_or_404(BotAgent, id=bot_id, user=request.user)
+    
+    if request.method == 'POST':
+        uploaded_file = request.FILES.get('file')
+        title = request.POST.get('title', uploaded_file.name)
+        description = request.POST.get('description', '')
+        
+        file_ext = os.path.splitext(uploaded_file.name)[1].lower()
+        if file_ext not in ALLOWED_EXTENSIONS:
+            messages.error(request, f'Неподдерживаемый формат. Разрешены: {", ".join(ALLOWED_EXTENSIONS)}')
+            return redirect('knowledge_base', bot_id=bot_id)
+        
+        try:
+            kb = KnowledgeBase.objects.create(
+                bot=bot, title=title, description=description,
+                file=uploaded_file, file_type=file_ext[1:], file_size=uploaded_file.size
+            )
+            
+            # Индексация RAG
+            file_path = kb.file.path
+            chunks_count = rag_service.process_document(kb.id, file_path)
+            
+            kb.chunks_count = chunks_count
+            kb.indexed_at = timezone.now()
+            kb.save()
+            
+            messages.success(request, f'Файл "{title}" загружен и проиндексирован ({chunks_count} фрагментов).')
+            
+        except Exception as e:
+            logger.error(f"Ошибка при загрузке: {str(e)}")
+            messages.error(request, f'Ошибка: {str(e)}')
+            if 'kb' in locals(): kb.delete()
+        
+        return redirect('knowledge_base', bot_id=bot_id)
+    
+    return render(request, 'dashboard/upload_kb.html', {'bot': bot})
+
+@login_required
+def knowledge_detail(request, kb_id):
+    """Просмотр документа и чанков"""
+    kb = get_object_or_404(KnowledgeBase, id=kb_id, bot__user=request.user)
+    # Исправлено: добавление chunks для шаблона
+    sample_chunks = kb.chunks.all()[:5]
+    return render(request, 'dashboard/knowledge_detail.html', {
+        'kb': kb, 
+        'sample_chunks': sample_chunks, 
+        'total_chunks': kb.chunks.count()
+    })
+
+@login_required
+@require_http_methods(['POST'])
+def knowledge_delete(request, kb_id):
+    """Удаление документа"""
+    kb = get_object_or_404(KnowledgeBase, id=kb_id, bot__user=request.user)
+    bot_id = kb.bot.id
+    if kb.file and os.path.exists(kb.file.path):
+        os.remove(kb.file.path)
+    kb.delete()
+    messages.success(request, 'Документ удален')
+    return redirect('knowledge_base', bot_id=bot_id)
+
+@login_required
+@require_http_methods(['POST'])
+def reindex_knowledge_base(request, kb_id):
+    """API: Переиндексация"""
+    kb = get_object_or_404(KnowledgeBase, id=kb_id, bot__user=request.user)
+    try:
+        kb.chunks.all().delete()
+        chunks_count = rag_service.process_document(kb.id, kb.file.path)
+        kb.chunks_count = chunks_count
+        kb.indexed_at = timezone.now()
+        kb.save()
+        return JsonResponse({'success': True, 'message': f'Переиндексировано: {chunks_count} чанков'})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+
+@login_required
+@require_http_methods(['POST'])
+def test_rag_search(request, bot_id):
+    """API: Тест RAG поиска"""
+    bot = get_object_or_404(BotAgent, id=bot_id, user=request.user)
+    try:
+        data = json.loads(request.body)
+        query = data.get('query', '')
+        if not query: return JsonResponse({'success': False, 'error': 'Empty query'}, status=400)
+        
+        result = rag_service.answer_question(bot.id, query, top_k=5)
+        return JsonResponse({
+            'success': True, 'answer': result['answer'],
+            'sources': result['sources'], 'confidence': result['confidence']
+        })
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+
+# ============================================
+# TELEGRAM CONNECT
+# ============================================
+
+@login_required
+def telegram_connect_view(request, bot_id):
+    """Страница подключения Telegram"""
+    bot = get_object_or_404(BotAgent, id=bot_id, user=request.user)
+    return render(request, 'dashboard/telegram_connect.html', {'bot': bot})
 
 @login_required
 @require_http_methods(["POST"])
-def telegram_save_credentials(request, agent_id):
+def telegram_save_credentials(request, bot_id):
     """Шаг 1: Сохранение API ID и API Hash"""
-    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
+    bot = get_object_or_404(BotAgent, id=bot_id, user=request.user)
     try:
         data = json.loads(request.body)
     except json.JSONDecodeError:
@@ -674,108 +711,121 @@ def telegram_save_credentials(request, agent_id):
     api_hash = str(data.get('api_hash', '')).strip()
     
     if not api_id or not api_hash:
-        return JsonResponse({
-            'success': False, 
-            'error': 'API ID и API Hash обязательны'
-        })
+        return JsonResponse({'success': False, 'error': 'API ID и API Hash обязательны'})
     
     if not api_id.isdigit():
-        return JsonResponse({
-            'success': False,
-            'error': 'API ID должен содержать только цифры'
-        })
-    
-    if len(api_hash) < 30:
-        return JsonResponse({
-            'success': False,
-            'error': 'API Hash слишком короткий'
-        })
-    
+        return JsonResponse({'success': False, 'error': 'API ID должен содержать только цифры'})
+        
     bot.api_id = api_id
     bot.api_hash = api_hash
     bot.save()
     
-    return JsonResponse({
-        'success': True,
-        'message': 'API ключи сохранены'
-    })
-
+    return JsonResponse({'success': True, 'message': 'API ключи сохранены'})
 
 @login_required
 @require_http_methods(["POST"])
-def telegram_send_code(request, agent_id):
-    """Шаг 2: Отправка кода верификации"""
-    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
+def telegram_send_code(request, bot_id):
+    """Шаг 2: Отправка кода верификации (Реальная отправка через Telethon)"""
+    bot = get_object_or_404(BotAgent, id=bot_id, user=request.user)
     data = json.loads(request.body)
-    
     phone_number = data.get('phone_number', '').strip()
     
     if not phone_number:
         return JsonResponse({'success': False, 'error': 'Номер телефона обязателен'})
     
-    if not bot.api_id or not bot.api_hash:
-        return JsonResponse({'success': False, 'error': 'Сначала сохраните API ключи'})
-    
-    # Здесь была бы интеграция с Telethon
-    # Для демонстрации возвращаем успех
-    
+    # Вызываем функцию из telegram_auth.py через async_to_sync
+    try:
+        result = async_to_sync(send_code_request)(
+            phone_number=phone_number,
+            api_id=bot.api_id,
+            api_hash=bot.api_hash
+        )
+    except Exception as e:
+        logger.error(f"Telethon error: {e}")
+        return JsonResponse({'success': False, 'error': f"Ошибка соединения: {str(e)}"})
+
+    # Если telegram_auth вернул ошибку
+    if not result.get('success'):
+        return JsonResponse(result)
+
     bot.phone_number = phone_number
+    bot.phone_code_hash = result['phone_code_hash']
     bot.status = 'waiting_code'
     bot.save()
     
-    return JsonResponse({
-        'success': True,
-        'message': 'Код отправлен на ваш Telegram'
-    })
-
+    request.session['temp_telegram_session'] = result['temp_session_string']
+    request.session.modified = True
+    
+    return JsonResponse({'success': True, 'message': 'Код отправлен на ваш Telegram'})
 
 @login_required
 @require_http_methods(["POST"])
-def telegram_verify_code(request, agent_id):
-    """Шаг 3: Верификация кода"""
-    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
+def telegram_verify_code(request, bot_id):
+    """Шаг 3: Верификация кода (Реальная проверка)"""
+    bot = get_object_or_404(BotAgent, id=bot_id, user=request.user)
     data = json.loads(request.body)
-    
     code = data.get('code', '').strip()
+    password = data.get('password', '').strip() # На случай 2FA пароля
     
     if not code:
         return JsonResponse({'success': False, 'error': 'Код обязателен'})
     
-    # Здесь была бы верификация через Telethon
-    # Для демонстрации возвращаем успех
+    # Достаем путь к временной сессии, который сохранили на прошлом шаге
+    temp_session_string = request.session.get('temp_telegram_session')
     
+    if not temp_session_string:
+         return JsonResponse({'success': False, 'error': 'Сессия истекла. Пожалуйста, отправьте код заново.'})
+
+    try:
+        # Вызываем проверку кода
+        result = async_to_sync(verify_code)(
+            phone_number=bot.phone_number,
+            phone_code_hash=bot.phone_code_hash,
+            code=code,
+            api_id=bot.api_id,
+            api_hash=bot.api_hash,
+            temp_session_string=temp_session_string,
+            password=password
+        )
+    except Exception as e:
+         logger.error(f"Verify error: {e}")
+         return JsonResponse({'success': False, 'error': str(e)})
+
+    if not result.get('success'):
+        # Если нужна 2FA (пароль), вернем это фронтенду
+        if result.get('requires_2fa'):
+            return JsonResponse(result) # Фронтенд должен показать поле для пароля
+        return JsonResponse(result)
+
+    # Успешная авторизация
     bot.status = 'active'
+    # Сохраняем итоговую строку сессии в базу
+    bot.session_string = result['session_string']
     bot.save()
     
-    return JsonResponse({
-        'success': True,
-        'message': 'Бот успешно подключен!'
-    })
-
+    # Очищаем временные данные
+    if 'temp_telegram_session' in request.session:
+        del request.session['temp_telegram_session']
+    
+    return JsonResponse({'success': True, 'message': 'Бот успешно подключен!'})
 
 @login_required
 @require_http_methods(["POST"])
-def telegram_validate_session(request, agent_id):
-    """Проверка валидности session string"""
-    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
-    
+def telegram_validate_session(request, bot_id):
+    """Проверка валидности сессии"""
+    bot = get_object_or_404(BotAgent, id=bot_id, user=request.user)
     if not bot.session_string:
         return JsonResponse({'success': False, 'error': 'Session string не найден'})
-    
-    # Здесь была бы проверка через Telethon
     return JsonResponse({'success': True, 'message': 'Сессия валидна'})
-
 
 @login_required
 @require_http_methods(["GET"])
-def telegram_get_account_info(request, agent_id):
+def telegram_get_account_info(request, bot_id):
     """Получение информации об аккаунте"""
-    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
-    
+    bot = get_object_or_404(BotAgent, id=bot_id, user=request.user)
     if not bot.session_string:
         return JsonResponse({'success': False, 'error': 'Бот не подключен'})
     
-    # Здесь была бы интеграция с Telethon
     return JsonResponse({
         'success': True,
         'user': {
@@ -787,385 +837,191 @@ def telegram_get_account_info(request, agent_id):
         }
     })
 
-
 @login_required
 @require_http_methods(["POST"])
-def telegram_disconnect(request, agent_id):
+def telegram_disconnect(request, bot_id):
     """Отключение Telegram"""
-    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
-    
+    bot = get_object_or_404(BotAgent, id=bot_id, user=request.user)
     bot.session_string = ''
     bot.phone_code_hash = ''
     bot.status = 'inactive'
     bot.save()
-    
     return JsonResponse({'success': True, 'message': 'Telegram отключен'})
 
+# ============================================
+# API ДЛЯ ФРОНТЕНДА И WEBHOOKS
+# ============================================
 
 @login_required
-@require_http_methods(["POST"])
-def update_bot_prompt(request, agent_id):
-    """Обновление промпта бота"""
-    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
-    data = json.loads(request.body)
-    
-    bot.system_prompt = data.get('system_prompt', '')
-    bot.save()
-    
-    return JsonResponse({
-        'success': True,
-        'message': 'Промпт обновлен'
-    })
-
-
-@login_required
-@require_http_methods(["POST"])
-def update_bot(request, agent_id):
-    """Обновление настроек бота"""
-    bot = get_object_or_404(BotAgent, id=agent_id, user=request.user)
-    data = json.loads(request.body)
-    
-    bot.name = data.get('name', bot.name)
-    bot.description = data.get('description', bot.description)
-    bot.save()
-    
-    return JsonResponse({
-        'success': True,
-        'message': 'Настройки обновлены'
-    })
-    
-
-@login_required
-@require_http_methods(["GET"])
-def get_analytics_summary(request):
-    """Получение сводной статистики"""
-    agent_id = request.GET.get('agent_id', 'all')
-    channel = request.GET.get('channel', 'all')
-    date_from = request.GET.get('date_from')
-    date_to = request.GET.get('date_to')
-    period = request.GET.get('period', '7days')
-    
-    # Определяем временной диапазон
-    now = timezone.now()
-    if period == 'today':
-        start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    elif period == 'yesterday':
-        start_date = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        now = start_date + timedelta(days=1)
-    elif period == '7days':
-        start_date = now - timedelta(days=7)
-    elif period == '30days':
-        start_date = now - timedelta(days=30)
-    elif period == '90days':
-        start_date = now - timedelta(days=90)
-    elif period == 'year':
-        start_date = now - timedelta(days=365)
-    else:
-        start_date = now - timedelta(days=7)
-    
-    # Если заданы конкретные даты
-    if date_from:
-        start_date = datetime.strptime(date_from, '%Y-%m-%d')
-    if date_to:
-        now = datetime.strptime(date_to, '%Y-%m-%d') + timedelta(days=1)
-    
-    # Здесь должны быть реальные запросы к базе данных
-    # Пока возвращаем демо-данные
-    
-    return JsonResponse({
-        'success': True,
-        'data': {
-            'total_conversations': 2847,
-            'total_leads': 1234,
-            'conversion_rate': 43.3,
-            'avg_response_time': 1.2,
-            'handoff_rate': 12.4,
-            'satisfaction_score': 4.7,
-            'changes': {
-                'conversations': 12.5,
-                'leads': 8.3,
-                'conversion': 2.1,
-                'response_time': -15,
-                'handoff': 3.2,
-                'satisfaction': 0.2
-            }
-        }
-    })
-
-
-@login_required
-@require_http_methods(["GET"])
-def get_conversations_chart(request):
-    """Получение данных для графика диалогов"""
-    agent_id = request.GET.get('agent_id', 'all')
-    channel = request.GET.get('channel', 'all')
-    period = request.GET.get('period', '7days')
-    
-    # Определяем количество дней
-    days_map = {
-        'today': 1,
-        'yesterday': 1,
-        '7days': 7,
-        '30days': 30,
-        '90days': 90,
-        'year': 365
-    }
-    days = days_map.get(period, 7)
-    
-    # Генерируем демо-данные
-    import random
-    labels = []
-    conversations = []
-    leads = []
-    
-    for i in range(min(days, 30)):
-        date = (timezone.now() - timedelta(days=days-1-i)).strftime('%Y-%m-%d')
-        labels.append(date)
-        conversations.append(random.randint(60, 150))
-        leads.append(random.randint(20, 70))
-    
-    return JsonResponse({
-        'success': True,
-        'data': {
-            'labels': labels,
-            'datasets': [
-                {
-                    'label': 'Диалоги',
-                    'data': conversations
-                },
-                {
-                    'label': 'Лиды',
-                    'data': leads
-                }
-            ]
-        }
-    })
-
-
-@login_required
-@require_http_methods(["GET"])
-def get_channels_chart(request):
-    """Получение данных по каналам"""
-    # Демо-данные
-    return JsonResponse({
-        'success': True,
-        'data': {
-            'labels': ['Telegram', 'WhatsApp', 'Сайт', 'Instagram'],
-            'values': [1234, 892, 456, 265],
-            'colors': ['#0088cc', '#25D366', '#6366f1', '#E4405F']
-        }
-    })
-
-
-@login_required
-@require_http_methods(["GET"])
-def get_funnel_data(request):
-    """Получение данных воронки конверсии"""
-    return JsonResponse({
-        'success': True,
-        'data': {
-            'stages': [
-                {'label': 'Посетители', 'value': 10234, 'percent': 100},
-                {'label': 'Начали диалог', 'value': 6652, 'percent': 65},
-                {'label': 'Квалифицированы', 'value': 3582, 'percent': 35},
-                {'label': 'Сделки', 'value': 1842, 'percent': 18}
-            ]
-        }
-    })
-
-
-@login_required
-@require_http_methods(["GET"])
-def get_response_time_distribution(request):
-    """Получение распределения времени ответа"""
-    return JsonResponse({
-        'success': True,
-        'data': {
-            'labels': ['<1s', '1-2s', '2-3s', '3-5s', '5-10s', '>10s'],
-            'values': [1250, 890, 450, 180, 60, 17]
-        }
-    })
-
-
-@login_required
-@require_http_methods(["GET"])
-def get_activity_heatmap(request):
-    """Получение тепловой карты активности"""
-    import random
-    
-    days = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
-    data = {}
-    
-    for day_idx, day in enumerate(days):
-        data[day] = {}
-        is_weekend = day_idx >= 5
-        
-        for hour in range(24):
-            is_work_hours = 9 <= hour <= 18
-            is_peak_hours = (10 <= hour <= 12) or (14 <= hour <= 17)
-            
-            if is_weekend:
-                level = random.randint(0, 1)
-            elif is_peak_hours:
-                level = random.randint(4, 5)
-            elif is_work_hours:
-                level = random.randint(2, 3)
-            elif 7 <= hour <= 22:
-                level = random.randint(1, 2)
-            else:
-                level = 0
-                
-            value = level * 15 + random.randint(0, 15)
-            data[day][hour] = {'level': level, 'value': value}
-    
-    return JsonResponse({
-        'success': True,
-        'data': data
-    })
-
-
-@login_required
-@require_http_methods(["GET"])
-def get_agents_performance(request):
-    """Получение статистики по агентам"""
-    # Демо-данные
-    agents = [
-        {
-            'id': 1,
-            'name': 'AI Продавец',
-            'type': 'Продажи',
-            'avatar': '🤖',
-            'conversations': 1234,
-            'leads': 567,
-            'conversion': 46,
-            'response_time': '0.8s',
-            'rating': 4.8,
-            'status': 'active'
-        },
-        {
-            'id': 2,
-            'name': 'Техподдержка',
-            'type': 'Поддержка',
-            'avatar': '💬',
-            'conversations': 892,
-            'leads': None,
-            'conversion': 78,
-            'response_time': '1.2s',
-            'rating': 4.6,
-            'status': 'active'
-        },
-        {
-            'id': 3,
-            'name': 'HR Ассистент',
-            'type': 'HR',
-            'avatar': '👔',
-            'conversations': 721,
-            'leads': 312,
-            'conversion': 43,
-            'response_time': '1.5s',
-            'rating': 4.9,
-            'status': 'training'
-        }
-    ]
-    
-    return JsonResponse({
-        'success': True,
-        'data': agents
-    })
-
-
-@login_required
-@require_http_methods(["GET"])
-def get_leads_status(request):
-    """Получение статусов лидов"""
-    return JsonResponse({
-        'success': True,
-        'data': {
-            'labels': ['Новые', 'В работе', 'Квалифицированы', 'Закрыты', 'Отказ'],
-            'values': [320, 450, 280, 180, 90],
-            'colors': [
-                'rgba(99, 102, 241, 0.7)',
-                'rgba(59, 130, 246, 0.7)',
-                'rgba(34, 197, 94, 0.7)',
-                'rgba(139, 92, 246, 0.7)',
-                'rgba(239, 68, 68, 0.5)'
-            ]
-        }
-    })
-
-
-@login_required
-@require_http_methods(["GET"])
-def get_satisfaction_trend(request):
-    """Получение тренда удовлетворённости"""
-    import random
-    
-    labels = []
-    values = []
-    
-    for i in range(14):
-        date = (timezone.now() - timedelta(days=13-i)).strftime('%Y-%m-%d')
-        labels.append(date)
-        values.append(round(random.uniform(4.4, 4.9), 1))
-    
-    return JsonResponse({
-        'success': True,
-        'data': {
-            'labels': labels,
-            'values': values
-        }
-    })
-
-
-@login_required
-@require_http_methods(["GET"])
-def get_comparison_data(request):
-    """Получение данных сравнения периодов"""
-    return JsonResponse({
-        'success': True,
-        'data': {
-            'conversations': {
-                'current': 2847,
-                'previous': 2531,
-                'change': 12.5
-            },
-            'leads': {
-                'current': 1234,
-                'previous': 1139,
-                'change': 8.3
-            },
-            'conversion': {
-                'current': 43.3,
-                'previous': 41.2,
-                'change': 2.1
-            },
-            'response_time': {
-                'current': 1.2,
-                'previous': 1.35,
-                'change': -11.1
-            }
-        }
-    })
-
-
-@login_required
-@require_http_methods(["POST"])
-def export_analytics(request):
-    """Экспорт аналитики"""
+@require_http_methods(['POST'])
+def toggle_bot_status(request, bot_id):
+    """API: Переключение статуса бота"""
     try:
+        bot = BotAgent.objects.get(id=bot_id, user=request.user)
+        bot.status = 'paused' if bot.status == 'active' else 'active'
+        bot.save()
+        return JsonResponse({'success': True, 'status': bot.status})
+    except BotAgent.DoesNotExist:
+        return JsonResponse({'success': False, 'message': 'Бот не найден'}, status=404)
+
+@login_required
+@require_http_methods(['POST'])
+def update_bot_prompt(request, bot_id):
+    """API: Обновление AI настроек (Системный промпт)"""
+    try:
+        bot = BotAgent.objects.get(id=bot_id, user=request.user)
         data = json.loads(request.body)
-        export_format = data.get('format', 'xlsx')
+        bot.system_prompt = data.get('system_prompt', bot.system_prompt)
+        bot.openai_model = data.get('ai_model', bot.openai_model)
+        bot.save()
+        return JsonResponse({'success': True})
+    except BotAgent.DoesNotExist:
+        return JsonResponse({'success': False, 'error': 'Бот не найден'}, status=404)
+
+@login_required
+@require_http_methods(['POST'])
+def update_bot_api(request, bot_id):
+    """API: Обновление основных настроек бота (Имя, Описание)"""
+    try:
+        bot = BotAgent.objects.get(id=bot_id, user=request.user)
+        data = json.loads(request.body)
+        bot.name = data.get('name', bot.name)
+        bot.description = data.get('description', bot.description)
+        bot.save()
+        return JsonResponse({'success': True})
+    except BotAgent.DoesNotExist:
+        return JsonResponse({'success': False, 'error': 'Бот не найден'}, status=404)
+
+@login_required
+@require_http_methods(['DELETE', 'POST'])
+def delete_bot_api(request, bot_id):
+    """API: Удаление бота (JSON)"""
+    try:
+        bot = BotAgent.objects.get(id=bot_id, user=request.user)
+        bot.delete()
+        return JsonResponse({'success': True})
+    except BotAgent.DoesNotExist:
+        return JsonResponse({'success': False, 'message': 'Бот не найден'}, status=404)
+
+@login_required
+@require_http_methods(['POST'])
+def upload_knowledge_api(request, bot_id):
+    """API: Загрузка файла (для JS)"""
+    try:
+        bot = BotAgent.objects.get(id=bot_id, user=request.user)
+        if 'file' not in request.FILES:
+            return JsonResponse({'success': False, 'message': 'Файл не передан'}, status=400)
+            
+        uploaded_file = request.FILES['file']
+        file_ext = os.path.splitext(uploaded_file.name)[1].lower()
         
-        # Здесь должна быть логика экспорта
-        # Возвращаем ссылку на файл
+        if file_ext not in ALLOWED_EXTENSIONS:
+             return JsonResponse({'success': False, 'message': 'Неверный формат'}, status=400)
+
+        kb = KnowledgeBase.objects.create(
+            bot=bot, title=uploaded_file.name, file=uploaded_file,
+            file_type=file_ext[1:], file_size=uploaded_file.size
+        )
         
-        return JsonResponse({
-            'success': True,
-            'message': 'Экспорт создан',
-            'download_url': '/media/exports/analytics_export.xlsx'
-        })
+        chunks_count = rag_service.process_document(kb.id, kb.file.path)
+        kb.chunks_count = chunks_count
+        kb.indexed_at = timezone.now()
+        kb.save()
+        
+        return JsonResponse({'success': True, 'chunks': chunks_count})
+        
+    except BotAgent.DoesNotExist:
+        return JsonResponse({'success': False, 'message': 'Бот не найден'}, status=404)
     except Exception as e:
-        return JsonResponse({
-            'success': False,
-            'error': str(e)
-        })
+        logger.error(f"Upload error: {e}")
+        return JsonResponse({'success': False, 'message': str(e)}, status=500)
+
+@csrf_exempt
+@require_http_methods(['POST'])
+def telegram_webhook(request, bot_token):
+    """Webhook для Telegram бота"""
+    try:
+        bot = BotAgent.objects.get(telegram_token=bot_token)
+        data = json.loads(request.body)
+        
+        if 'message' in data:
+            message = data['message']
+            user_id = str(message['from']['id'])
+            text = message.get('text', '')
+            
+            conversation, _ = Conversation.objects.get_or_create(
+                bot=bot, user_id=user_id,
+                defaults={'user_name': message['from'].get('first_name', 'User')}
+            )
+            
+            Message.objects.create(conversation=conversation, role='user', content=text)
+            
+            # RAG логика
+            if bot.use_rag:
+                result = rag_service.answer_question(bot.id, text, top_k=bot.rag_top_k)
+                bot_response = result['answer']
+            else:
+                bot_response = "Я пока умею только молчать (RAG выключен)."
+            
+            Message.objects.create(conversation=conversation, role='bot', content=bot_response)
+            conversation.last_message_at = timezone.now()
+            conversation.save()
+            
+            # TODO: Отправить ответ через Requests к Telegram API
+            
+            return JsonResponse({'success': True})
+        return JsonResponse({'success': True})
+    except BotAgent.DoesNotExist:
+        return JsonResponse({'error': 'Bot not found'}, status=404)
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return JsonResponse({'error': str(e)}, status=500)
+
+@csrf_exempt
+@require_http_methods(['POST'])
+def whatsapp_webhook(request, bot_token):
+    """Webhook для WhatsApp"""
+    return JsonResponse({'success': True})
+
+@csrf_exempt
+@require_http_methods(['POST'])
+def send_message_api(request, bot_id):
+    """API: Отправка сообщения (Chat Interface)"""
+    try:
+        bot = BotAgent.objects.get(id=bot_id)
+        data = json.loads(request.body)
+        user_id = data.get('user_id')
+        message_text = data.get('message')
+        
+        if not user_id or not message_text:
+            return JsonResponse({'error': 'missing fields'}, status=400)
+        
+        conversation, _ = Conversation.objects.get_or_create(
+            bot=bot, user_id=user_id, defaults={'user_name': f'User {user_id}'}
+        )
+        
+        Message.objects.create(conversation=conversation, role='user', content=message_text)
+        
+        if bot.use_rag:
+            result = rag_service.answer_question(bot.id, message_text, top_k=bot.rag_top_k)
+            bot_response = result['answer']
+            sources = result.get('sources', [])
+        else:
+            bot_response = "Ответ без RAG"
+            sources = []
+        
+        Message.objects.create(conversation=conversation, role='bot', content=bot_response)
+        conversation.last_message_at = timezone.now()
+        conversation.save()
+        
+        return JsonResponse({'success': True, 'response': bot_response, 'sources': sources})
+        
+    except BotAgent.DoesNotExist:
+        return JsonResponse({'error': 'Bot not found'}, status=404)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+@login_required
+def settings_view(request):
+    """Настройки аккаунта"""
+    return render(request, 'dashboard/settings.html')
